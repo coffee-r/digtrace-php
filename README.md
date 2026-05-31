@@ -123,6 +123,10 @@ $collector = new Collector($config, $sink, new MyPostgresSqlAnalyzer());
 php bin/digtrace report trace.jsonl
 php bin/digtrace report --format json jan.jsonl feb.jsonl > report.json
 
+# 旧系/新系で採取済みの JSONL を比較
+php bin/digtrace compare legacy.jsonl --against new.jsonl
+php bin/digtrace compare legacy-a.jsonl legacy-b.jsonl --against new-a.jsonl --format json
+
 # SQL 値の表示モードを指定（デフォルト: normalized / tokenized も選択可）
 php bin/digtrace report --value-mode tokenized trace.jsonl
 
@@ -136,6 +140,10 @@ php bin/digtrace decrypt --private-key key.pem --format json trace.jsonl > resto
 ```
 
 レポートは HTTP エントリポイントと実行パターンを決定論的にまとめる証拠ビューです。業務ルールの命名や推論は行わず、必要な判断材料は `keepKeys` / `sqlValueAllowlist` / `addCustom()` で観測事実として残します。
+
+`report` は完全な時系列シグネチャ（`observed_flow_signature`）に加えて、連続する同一 SQL / custom イベントを `xN` でまとめた圧縮シグネチャ（`compressed_flow_signature`）も出力します。N+1 のように同じ SQL が件数分だけ繰り返されるケースを、件数差を残しながら読みやすくするためです。timeline が `maxTimelineSize` で打ち切られたトレースは、シグネチャ末尾に `TRUNCATED:<limit>` が付き、pattern に `truncated` / `truncation_limit` が出ます。
+
+`compare` は HTTP 実行・サーバ起動・Git ブランチ切替は行わず、旧系（base）と新系（target）で採取済みの JSONL を比較します。比較対象はエントリポイント、ステータス分布、レスポンス種別、`response_shape`、完全/圧縮シグネチャ、更新副作用（`effects`）、キャプチャエラー、timeline 打ち切りです。
 
 暗号化記録に使う RSA 鍵ペアは、このライブラリでは管理しない。検証用に OpenSSL で作る場合は次のように生成する。
 

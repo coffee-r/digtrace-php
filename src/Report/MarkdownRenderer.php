@@ -126,6 +126,10 @@ class MarkdownRenderer
         $lines[] = '- 観測数: `' . (isset($pat['count']) ? $pat['count'] : 0) . '`';
         $lines[] = '- 代表トレース: `' . (isset($pat['representative_trace_id']) ? $pat['representative_trace_id'] : '-') . '`';
         $lines[] = '- シグネチャ: `' . $this->escape(isset($pat['observed_flow_signature']) ? $pat['observed_flow_signature'] : '') . '`';
+        $lines[] = '- 圧縮シグネチャ: `' . $this->escape(isset($pat['compressed_flow_signature']) ? $pat['compressed_flow_signature'] : '') . '`';
+        if (!empty($pat['truncated'])) {
+            $lines[] = '- timeline打ち切り: `yes` (limit=' . $this->escape(isset($pat['truncation_limit']) ? $pat['truncation_limit'] : 'unknown') . ')';
+        }
         $lines[] = '';
 
         // SQL Flow

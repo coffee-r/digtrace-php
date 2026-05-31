@@ -78,6 +78,9 @@ class Aggregator
                 $entrypoints[$entryKey]['patterns'][$signature] = [
                     'behavior_pattern_id'     => $patternId,
                     'observed_flow_signature' => $signature,
+                    'compressed_flow_signature' => $this->compressedPatternSignature($trace),
+                    'truncated'               => $this->isTruncated($trace),
+                    'truncation_limit'        => $this->truncationLimit($trace),
                     'count'                   => 0,
                     'statuses'                => [],
                     'sql_flow'                => $this->buildSqlFlow($trace),
@@ -165,6 +168,93 @@ class Aggregator
      */
     public function patternSignature(array $trace)
     {
+        $parts   = $this->timelineSignatureParts($trace);
+
+        $http   = isset($trace['http']) && is_array($trace['http']) ? $trace['http'] : [];
+        $status = isset($http['status']) ? (string) $http['status'] : 'UNKNOWN';
+        $parts[] = 'STATUS:' . $status;
+
+        $limit = $this->truncationLimit($trace);
+        if ($limit !== null) {
+            $parts[] = 'TRUNCATED:' . $limit;
+        }
+
+        return implode(' -> ', $parts);
+    }
+
+    /**
+     * 連続する同一イベントを xN 表記に圧縮した実行パターンのシグネチャを生成する。
+     *
+     * @param array $trace
+     * @return string
+     */
+    public function compressedPatternSignature(array $trace)
+    {
+        $parts = [];
+        $last  = null;
+        $count = 0;
+
+        foreach ($this->timelineSignatureParts($trace) as $part) {
+            if ($last === null) {
+                $last = $part;
+                $count = 1;
+                continue;
+            }
+            if ($part === $last) {
+                $count++;
+                continue;
+            }
+            $parts[] = $this->formatCompressedPart($last, $count);
+            $last = $part;
+            $count = 1;
+        }
+
+        if ($last !== null) {
+            $parts[] = $this->formatCompressedPart($last, $count);
+        }
+
+        $http   = isset($trace['http']) && is_array($trace['http']) ? $trace['http'] : [];
+        $status = isset($http['status']) ? (string) $http['status'] : 'UNKNOWN';
+        $parts[] = 'STATUS:' . $status;
+
+        $limit = $this->truncationLimit($trace);
+        if ($limit !== null) {
+            $parts[] = 'TRUNCATED:' . $limit;
+        }
+
+        return implode(' -> ', $parts);
+    }
+
+    /**
+     * @param array $trace
+     * @return bool
+     */
+    public function isTruncated(array $trace)
+    {
+        return $this->truncationLimit($trace) !== null;
+    }
+
+    /**
+     * @param array $trace
+     * @return int|null
+     */
+    public function truncationLimit(array $trace)
+    {
+        foreach ($this->errorEvents($trace) as $error) {
+            $message = isset($error['message']) ? (string) $error['message'] : '';
+            if (preg_match('/timeline truncated: limit=(\d+)/', $message, $matches)) {
+                return (int) $matches[1];
+            }
+        }
+        return null;
+    }
+
+    /**
+     * @param array $trace
+     * @return string[]
+     */
+    private function timelineSignatureParts(array $trace)
+    {
         $parts   = [];
         $timeline = isset($trace['timeline']) && is_array($trace['timeline']) ? $trace['timeline'] : [];
 
@@ -183,11 +273,17 @@ class Aggregator
             }
         }
 
-        $http   = isset($trace['http']) && is_array($trace['http']) ? $trace['http'] : [];
-        $status = isset($http['status']) ? (string) $http['status'] : 'UNKNOWN';
-        $parts[] = 'STATUS:' . $status;
+        return $parts;
+    }
 
-        return implode(' -> ', $parts);
+    /**
+     * @param string $part
+     * @param int    $count
+     * @return string
+     */
+    private function formatCompressedPart($part, $count)
+    {
+        return $count > 1 ? $part . ' x' . $count : $part;
     }
 
     /**

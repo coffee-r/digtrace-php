@@ -112,6 +112,83 @@ class AggregatorTest extends TestCase
         $this->assertStringContainsString('CUSTOM:cache_read', $agg->patternSignature($trace));
     }
 
+    public function testCompressedPatternSignatureCompressesConsecutiveSql()
+    {
+        $agg = new Aggregator();
+        $sql = $this->makeSqlEvent();
+        $trace = $this->makeTrace(['timeline' => [$sql, $sql, $sql]]);
+
+        $this->assertSame(
+            'SELECT:PRODUCTS:sha256:abc123 x3 -> STATUS:200',
+            $agg->compressedPatternSignature($trace)
+        );
+    }
+
+    public function testCompressedPatternSignatureDoesNotCompressNonConsecutiveSql()
+    {
+        $agg = new Aggregator();
+        $sql = $this->makeSqlEvent();
+        $other = $this->makeSqlEvent(['operation' => 'UPDATE', 'tables' => ['PRODUCTS'], 'statement_hash' => 'sha256:def456']);
+        $trace = $this->makeTrace(['timeline' => [$sql, $other, $sql]]);
+
+        $this->assertSame(
+            'SELECT:PRODUCTS:sha256:abc123 -> UPDATE:PRODUCTS:sha256:def456 -> SELECT:PRODUCTS:sha256:abc123 -> STATUS:200',
+            $agg->compressedPatternSignature($trace)
+        );
+    }
+
+    public function testCompressedPatternSignatureCompressesConsecutiveCustomEvents()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace(['timeline' => [
+            ['seq' => 1, 'type' => 'custom', 'label' => 'cache_read'],
+            ['seq' => 2, 'type' => 'custom', 'label' => 'cache_read'],
+        ]]);
+
+        $this->assertSame('CUSTOM:cache_read x2 -> STATUS:200', $agg->compressedPatternSignature($trace));
+    }
+
+    public function testPatternSignaturesIncludeTruncation()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace([
+            'timeline' => [$this->makeSqlEvent()],
+            'errors' => [['type' => 'capture_failure', 'message' => 'timeline truncated: limit=500']],
+        ]);
+
+        $this->assertStringEndsWith('STATUS:200 -> TRUNCATED:500', $agg->patternSignature($trace));
+        $this->assertStringEndsWith('STATUS:200 -> TRUNCATED:500', $agg->compressedPatternSignature($trace));
+    }
+
+    public function testAggregateExposesCompressedSignatureAndTruncation()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace([
+            'timeline' => [$this->makeSqlEvent(), $this->makeSqlEvent()],
+            'errors' => [['type' => 'capture_failure', 'message' => 'timeline truncated: limit=500']],
+        ]);
+
+        $report = $agg->aggregate([$trace]);
+        $pattern = $report['observed_entrypoints'][0]['patterns'][0];
+
+        $this->assertSame('SELECT:PRODUCTS:sha256:abc123 x2 -> STATUS:200 -> TRUNCATED:500', $pattern['compressed_flow_signature']);
+        $this->assertTrue($pattern['truncated']);
+        $this->assertSame(500, $pattern['truncation_limit']);
+    }
+
+    public function testTruncationChangesPattern()
+    {
+        $agg = new Aggregator();
+        $trace1 = $this->makeTrace(['timeline' => [$this->makeSqlEvent()]]);
+        $trace2 = $this->makeTrace([
+            'timeline' => [$this->makeSqlEvent()],
+            'errors' => [['type' => 'capture_failure', 'message' => 'timeline truncated: limit=500']],
+        ]);
+
+        $report = $agg->aggregate([$trace1, $trace2]);
+        $this->assertCount(2, $report['observed_entrypoints'][0]['patterns']);
+    }
+
     public function testAggregateGroupsByEntrypoint()
     {
         $agg    = new Aggregator();
