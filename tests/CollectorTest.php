@@ -111,6 +111,17 @@ class CollectorTest extends TestCase
         $this->assertSame(201, $trace['http']['status']);
     }
 
+    public function testStartWithoutFlowRecordsNullFlow()
+    {
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector(null, $sink);
+        $collector->start($this->makeHttp('GET', '/products'));
+        $collector->finish($this->makeResponse(200));
+
+        $this->assertNull($sink->captured['flow']['flow_id']);
+        $this->assertNull($sink->captured['flow']['seq']);
+    }
+
     public function testFinishCalledTwiceIsNoOp()
     {
         $sink      = new CaptureSink();

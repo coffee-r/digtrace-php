@@ -54,6 +54,15 @@ class JsonlSinkTest extends TestCase
         $sink->write(['trace_id' => 'x']);
     }
 
+    public function testWriteThrowsWhenJsonEncodeFails()
+    {
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('failed to encode JSONL line');
+
+        $sink = new JsonlSink($this->tmpFile);
+        $sink->write(['bad' => "\xB1\x31"]);
+    }
+
     public function testWriteUsesUnescapedUnicode()
     {
         $sink = new JsonlSink($this->tmpFile);

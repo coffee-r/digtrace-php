@@ -26,36 +26,25 @@ interface CollectorInterface
      * （ログ相関が主目的のため、ネストしたトレースはサポートしない）。
      *
      * @param HttpInput $http  HTTPリクエスト入力データ
-     * @param Flow      $flow  フロー相関情報
+     * @param Flow|null $flow  任意のフロー相関情報。未指定時は flow_id/seq を null として記録する。
      */
-    public function start(HttpInput $http, Flow $flow);
+    public function start(HttpInput $http, $flow = null);
 
     /**
      * アクティブなトレースの trace_id を返す。トレースがなければ null。
      *
      * アダプタがレスポンスヘッダ (X-Trace-Id 等) やアプリログの相関に使う。
-     * 未サンプリングのトレースでも trace_id は返す（ログ相関に使えるため）。
+     * trace_id はログ相関に使える。
      *
      * @return string|null
      */
     public function getActiveTraceId();
 
     /**
-     * アクティブなトレースがサンプリング対象かどうかを返す。
-     *
-     * アダプタが shape 抽出等の重い処理をスキップするための判定に使う。
-     * トレースが存在しない場合は false を返す。
-     * ※ schema v1 に sampled フィールドはない。JSONL への存在自体がサンプリング済みの証拠。
-     *
-     * @return bool
-     */
-    public function isSampled();
-
-    /**
      * 実行された SQL 文をタイムラインに追記する。
      *
      * Collector が正規化・HMAC トークン化・テーブル抽出・effects 集計を内部で行う。
-     * 未サンプリング時は黙って無視。seq は Collector が全イベント共通のカウンタで採番する。
+     * アクティブトレースなしの場合は黙って無視。seq は Collector が全イベント共通のカウンタで採番する。
      *
      * @param string $statement  実行された SQL 文字列。
      *                           バインド値が埋め込まれた形 (CI3 の query_history 等) でも、
@@ -73,7 +62,7 @@ interface CollectorInterface
      *
      * キャッシュ・ファイル・キュー・外部 HTTP 呼び出しなど SQL 以外の操作に使う。
      * Collector が $data の shape を生成する。
-     * 未サンプリング時は黙って無視。seq は Collector が採番する。
+     * アクティブトレースなしの場合は黙って無視。seq は Collector が採番する。
      *
      * @param string $label  短い操作名。例: 'cache_read', 'file_put', 'queue_push'
      * @param mixed  $data   操作に紐づく任意のデータ（生の値）。null = データなし。
@@ -88,8 +77,8 @@ interface CollectorInterface
      *   - アダプタが観測したアプリ例外 (type='php_exception')
      *
      * 動作:
-     *   サンプリング済みかつアクティブなトレースがある場合にのみ errors[] に追記する。
-     *   未サンプリング・アクティブトレースなしの場合は黙って無視する。
+     *   アクティブなトレースがある場合にのみ errors[] に追記する。
+     *   アクティブトレースなしの場合は黙って無視する。
      *
      * エラーの可観測性:
      *   - errors[] の内容は JSONL レコードとして sink に書き出される。

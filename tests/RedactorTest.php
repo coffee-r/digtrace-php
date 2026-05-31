@@ -153,6 +153,23 @@ class RedactorTest extends TestCase
         $this->assertMatchesRegularExpression('/^\{p-[0-9a-f]{12}\}$/', $token);
     }
 
+    public function testBuildTokensDepthLimit()
+    {
+        $r = $this->makeRedactorWithSecret(['maxDepth' => 2]);
+        $tokens = $r->buildTokens(['a' => ['b' => ['c' => 'deep']]]);
+        $this->assertSame(['a' => ['b' => '...']], $tokens);
+    }
+
+    public function testBuildTokensNodeLimit()
+    {
+        $r = $this->makeRedactorWithSecret(['maxShapeNodes' => 3]);
+        $tokens = $r->buildTokens(['a' => 'one', 'b' => 'two', 'c' => 'three']);
+
+        $this->assertMatchesRegularExpression('/^\{p-[0-9a-f]{12}\}$/', $tokens['a']);
+        $this->assertMatchesRegularExpression('/^\{p-[0-9a-f]{12}\}$/', $tokens['b']);
+        $this->assertSame('...', $tokens['c']);
+    }
+
     // -------------------------------------------------------------------------
     // buildValues
     // -------------------------------------------------------------------------

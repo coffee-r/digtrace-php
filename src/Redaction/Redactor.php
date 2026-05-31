@@ -152,6 +152,27 @@ class Redactor
      */
     public function buildTokens($data)
     {
+        $nodesLeft = $this->config->maxShapeNodes;
+        return $this->buildTokensInternal($data, 0, $nodesLeft);
+    }
+
+    /**
+     * @param mixed $data
+     * @param int   $depth
+     * @param int   &$nodesLeft
+     * @return mixed
+     */
+    private function buildTokensInternal($data, $depth, &$nodesLeft)
+    {
+        if ($nodesLeft <= 0) {
+            return '...';
+        }
+        $nodesLeft--;
+
+        if ($depth >= $this->config->maxDepth) {
+            return '...';
+        }
+
         if (!is_array($data) && !is_object($data)) {
             return $this->tokenize($data);
         }
@@ -161,15 +182,19 @@ class Redactor
         $isList = !empty($data) && $keys === range(0, count($data) - 1);
 
         if ($isList) {
-            return array_map([$this, 'buildTokens'], array_values($data));
+            $result = [];
+            foreach (array_values($data) as $value) {
+                $result[] = $this->buildTokensInternal($value, $depth + 1, $nodesLeft);
+            }
+            return $result;
         }
 
         $result = [];
         foreach ($data as $key => $value) {
             if (is_array($value) || is_object($value)) {
-                $result[$key] = $this->buildTokens($value);
+                $result[$key] = $this->buildTokensInternal($value, $depth + 1, $nodesLeft);
             } else {
-                $result[$key] = $this->tokenize($value);
+                $result[$key] = $this->buildTokensInternal($value, $depth + 1, $nodesLeft);
             }
         }
         return $result;

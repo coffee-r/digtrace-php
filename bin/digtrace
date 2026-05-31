@@ -51,9 +51,6 @@ while ($i < count($argv)) {
     } elseif ($arg === '--private-key' && isset($argv[$i + 1])) {
         $options['private-key'] = $argv[$i + 1];
         $i++;
-    } elseif ($arg === '--bits' && isset($argv[$i + 1])) {
-        $options['bits'] = (int) $argv[$i + 1];
-        $i++;
     } elseif (strpos($arg, '--') === 0) {
         fwrite(STDERR, "Unknown option: $arg\n");
         exit(1);
@@ -76,8 +73,6 @@ if ($command === 'report') {
     runReport($paths, $options);
 } elseif ($command === 'decrypt') {
     runDecrypt($paths, $options);
-} elseif ($command === 'keygen') {
-    runKeygen($options);
 } else {
     fwrite(STDERR, "Unknown command: $command\n\n");
     printHelp();
@@ -189,48 +184,6 @@ function runDecrypt(array $paths, array $options)
     exit(0);
 }
 
-function runKeygen(array $options)
-{
-    $bits = isset($options['bits']) ? $options['bits'] : 2048;
-    if (!in_array($bits, [2048, 4096], true)) {
-        fwrite(STDERR, "Error: --bits must be 2048 or 4096\n");
-        exit(1);
-    }
-
-    $key = openssl_pkey_new([
-        'private_key_bits' => $bits,
-        'private_key_type' => OPENSSL_KEYTYPE_RSA,
-    ]);
-
-    if ($key === false) {
-        fwrite(STDERR, "Error: RSA key generation failed: " . openssl_error_string() . "\n");
-        exit(1);
-    }
-
-    $privatePem = '';
-    openssl_pkey_export($key, $privatePem);
-    $publicPem = openssl_pkey_get_details($key)['key'];
-
-    $privateFile = 'key.pem';
-    $publicFile  = 'key.pub.pem';
-
-    if (file_put_contents($privateFile, $privatePem) === false) {
-        fwrite(STDERR, "Error: Cannot write $privateFile\n");
-        exit(1);
-    }
-    if (file_put_contents($publicFile, $publicPem) === false) {
-        fwrite(STDERR, "Error: Cannot write $publicFile\n");
-        exit(1);
-    }
-
-    chmod($privateFile, 0600);
-
-    echo "Generated RSA-$bits key pair:\n";
-    echo "  Private key: $privateFile  (keep secret, do not put on servers)\n";
-    echo "  Public key:  $publicFile   (put in Config::\$encryptionPublicKey)\n";
-    exit(0);
-}
-
 function printHelp()
 {
     echo <<<'HELP'
@@ -239,13 +192,11 @@ digtrace — digtrace-v1 report and decrypt tool
 Usage:
   php bin/digtrace report <jsonl...> [--format md|json] [--value-mode normalized|tokenized]
   php bin/digtrace decrypt <jsonl...> --private-key key.pem [--format jsonl|json]
-  php bin/digtrace keygen [--bits 2048|4096]
   php bin/digtrace --help
 
 Commands:
   report   Generate a Markdown or JSON summary report from JSONL digtrace files
   decrypt  Decrypt *_encrypted fields using a private key and output restored JSONL
-  keygen   Generate an RSA key pair (key.pem + key.pub.pem)
 
 Options for report:
   --format md|json          Output format (default: md)
@@ -256,15 +207,10 @@ Options for decrypt:
   --private-key <file>      Path to RSA private key PEM file (required)
   --format jsonl|json       Output format (default: jsonl)
 
-Options for keygen:
-  --bits 2048|4096          RSA key size (default: 2048)
-
 Examples:
   php bin/digtrace report trace.jsonl
   php bin/digtrace report --format json jan.jsonl feb.jsonl > report.json
   php bin/digtrace decrypt --private-key key.pem trace.jsonl > restored.jsonl
-  php bin/digtrace keygen
-  php bin/digtrace keygen --bits 4096
 
 HELP;
 }

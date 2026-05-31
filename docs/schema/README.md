@@ -15,14 +15,12 @@
 | `app_name` | string | アプリケーション名（例: `"coffee-api"`） |
 | `env` | string | 環境名（例: `"production"`, `"staging"`） |
 | `started_at` | string (date-time) | リクエスト開始時刻 |
-| `flow` | object | ユーザーシナリオ相関（後述） |
+| `flow` | object | 任意の調査フロー相関情報（後述） |
 | `redaction` | object | マスキングモードの記録（後述） |
 | `http` | object | リクエスト/レスポンス情報（後述） |
 | `timeline` | array | データ操作の時系列（後述） |
 | `effects` | array | 書き込み操作のサマリ（後述） |
 | `errors` | array | キャプチャ失敗またはアプリ例外 |
-
-> **`sampled` フィールドはない。** JSONL に書き込まれた時点でそのリクエストは必ずサンプリングされているため、フィールドとして持つ意味がない。
 
 ---
 
@@ -53,16 +51,16 @@
 
 ## Flow
 
-`flow` は「複数の HTTP リクエストを 1 つのユーザーシナリオとして束ねる仕組み」。
+`flow` は、複数の HTTP リクエストを調査用に紐づける任意の相関情報。
 
-**例**: 商品閲覧 → カート追加 → 注文という 3 リクエストはそれぞれ別 trace だが、`flow_id` が同じなら「同一フロー」として時系列で並べて読める。
+通常は Collector 導入側で指定しないため、`flow_id` / `seq` は null になる。開発者や QA が明示的に調査シナリオを流す場合だけ、ヘッダやテストコードなどから `flow_id` / `seq` を渡す。
 
 | フィールド | 説明 |
 |---|---|
-| `flow_id` | シナリオ識別子。null のときはフロー追跡なし |
-| `seq` | フロー内のステップ番号（任意）。null 可 |
+| `flow_id` | 任意の相関識別子。null のときは flow 指定なし |
+| `seq` | 明示されたステップ番号（任意）。null 可 |
 
-`flow_id` の取得方法（header から取るか、session を使うかなど）はアダプタの実装詳細であり、スキーマには含まない。レポートは `flow_id` でトレースをグループし、`seq` → `started_at` 順に並べる。
+本番のセッション由来 ID は、ブラウザバック、別タブ、非同期リクエスト、離脱などが混ざるため、業務シナリオそのものを表すとは限らない。report は `flow` から仕様や業務フローを断定しない。
 
 ---
 
@@ -102,7 +100,7 @@ SQL ステートメント 1 件。
 
 - `statement_normalized` — リテラルを `{parameter}` に置換した正規化 SQL。同一パターンのグルーピング基準。
 - `statement_hash` — `sha256:<hex>` (`statement_normalized` のハッシュ)。実行をまたいで安定。`effects[].statement_hash` と対応。
-- `observed_values` — `sqlValueAllowlist` にマッチした列の実値。`{ "ORDERS.STATUS": { redacted: false, values: ["shipped"] } }` のような形式。実行された SQL に値が埋め込まれている場合（INSERT/UPDATE SET/WHERE）に best-effort で抽出する。現状は実値（`redacted: false`）のみ。トークン化版（`redacted: true`）は将来拡張。
+- `observed_values` — `sqlValueAllowlist` にマッチした列の実値。`{ "ORDERS.STATUS": { redacted: false, values: ["shipped"] } }` のような形式。実行された SQL に値が埋め込まれている場合（INSERT/UPDATE SET/WHERE）に正規表現ベースの best-effort で抽出する。関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがある。現状は実値（`redacted: false`）のみ。トークン化版（`redacted: true`）は将来拡張。
 - `analysis.analyzer` — 解析方式。現状は `regex`。
 - `analysis.dialect` — 解析に使った SQL 方言（`oracle` / `sqlite`）。`Collector` に注入したアナライザに対応する。
 - `analysis.warnings` — 信頼度が下がる原因を列挙。`query_history_capture_has_no_bind_values`（CI3 の query_history 経由では bind 分離ができない）など。
@@ -128,7 +126,7 @@ SQL ステートメント 1 件。
 **AI 分析で効くフィールド**（そのまま AI に渡すとき注目するもの）:
 - `statement_normalized` — SQLパターンの読み取り
 - `statement_hash` — effects との突合
-- `observed_values` — 実値ベースの業務分岐の推定（allowlist に入れた列のみ）
+- `observed_values` — allowlist に入れた列の業務判断材料
 - `effects[]` — 書き込み操作のサマリ（timeline を全スキャンしなくて済む）
 - `query_values` / `request_values` — リクエストの業務的な判断材料
 

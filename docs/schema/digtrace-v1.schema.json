@@ -52,17 +52,17 @@
   "$defs": {
 
     "flow": {
-      "description": "Links multiple HTTP requests that belong to one user scenario. e.g. browse → add-to-cart → order are 3 traces with the same flow_id.",
+      "description": "Optional correlation information supplied by the integration layer. It is mainly for explicit developer/QA investigation flows and does not by itself prove a business scenario.",
       "type": "object",
       "required": ["flow_id", "seq"],
       "properties": {
         "flow_id": {
           "type": ["string", "null"],
-          "description": "Scenario identifier. null when flow tracking is not configured or detected."
+          "description": "Optional correlation identifier. null when no flow is supplied."
         },
         "seq": {
           "type": ["integer", "null"],
-          "description": "Optional step index within the flow (1-based). null when not set."
+          "description": "Optional explicit step index within the flow (1-based). null when not set."
         }
       },
       "additionalProperties": false
@@ -170,7 +170,7 @@
 
         "observed_values": {
           "type": "object",
-          "description": "Values extracted from the compiled SQL for columns matching Config sqlValueAllowlist. Key format: 'table.column' or 'column'.",
+          "description": "Values extracted best-effort from the compiled SQL for columns matching Config sqlValueAllowlist. Key format: 'table.column' or 'column'. Complex SQL, function calls, comma-containing literals, or dialect-specific literals may not be extracted.",
           "additionalProperties": { "$ref": "#/$defs/observed_column" }
         },
 

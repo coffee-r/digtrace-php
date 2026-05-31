@@ -22,7 +22,7 @@ composer require coffee-r/digtrace-php
 
 > Packagist 公開後に利用可。それまでは `composer.json` の `repositories` に VCS リポジトリを指定してインストールする。
 >
-> 動作要件は PHP 7.0 以上（`openssl` 拡張。暗号化機能を使う場合）。テストの実行は PHP 7.3 以上（dev 依存の PHPUnit ^9.5 が要求）。
+> 動作要件は PHP 7.0 以上（`openssl` 拡張）。テストの実行は PHP 7.3 以上（dev 依存の PHPUnit ^9.5 が要求）。
 
 ## 基本的な使い方
 
@@ -50,7 +50,11 @@ $http->requestHeadersRaw = $yourRequest->headers();      // CI3: $this->input->r
 $http->pathPattern       = '/products/{id}';             // フレームワークのルート定義などから
 
 // これ以降、後続の証拠データ追加メソッドが使えます。
-$collector->start($http, new Flow()); // Flow(flowId, seq) でシナリオ追跡も可
+// flow を指定しない場合、flow_id / seq は null として記録されます。
+$collector->start($http);
+
+// 開発・QA の調査で明示的な相関が必要な場合だけ Flow を渡します。
+// $collector->start($http, new Flow('qa-order-cod-001', 1));
 
 // SQL
 $collector->addSql($db->last_query(), [], 'query_history');
@@ -88,6 +92,10 @@ $collector->finish($response);
 | `maxShapeNodes` | int | 10000 | shape 生成のノード訪問数上限（メモリ対策） |
 | `maxTimelineSize` | int\|null | 500 | timeline イベント数上限。超過で以降を無視し `errors[]` に記録（null = 無制限） |
 
+`sqlValueAllowlist` は実行済み SQL 文字列から正規表現ベースで値を拾う best-effort 機能です。単純な `INSERT ... VALUES (...)`、`UPDATE ... SET ...`、`WHERE col = value` などを対象にしており、関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがあります。抽出できない場合も観測自体は失敗扱いにせず、`statement_normalized` と shape を主な証拠として残します。
+
+採取対象を絞る場合は、フレームワーク側の差し込み箇所や環境設定で Collector を呼ぶ範囲を制御します。このライブラリは仕様・移行調査用の証拠採取が目的で、低頻度の分岐やエッジケースを落とさないことを優先します。
+
 ## SQL 方言の選択
 
 SQL の正規化・テーブル抽出・トークン化は RDBMS の方言ごとに挙動が変わる（文字列リテラルの `''` エスケープ、識別子クォート、Oracle の `q'[...]'` / `N'...'` / `FROM dual` / dblink、SQLite の `[ident]` など）。アナライザは **`Collector` の第4引数で明示注入する**（必須・null 不可）。同梱は `OracleSqlAnalyzer` / `SqliteSqlAnalyzer` の 2 種。
@@ -121,15 +129,26 @@ php bin/digtrace report --value-mode tokenized trace.jsonl
 # 複数サーバのログをまとめてレポート（ロードバランス環境）
 php bin/digtrace report server1.jsonl server2.jsonl server3.jsonl
 
-# RSA 鍵ペア生成（公開鍵をサーバに、秘密鍵は手元で保管）
-php bin/digtrace keygen           # RSA-2048
-php bin/digtrace keygen --bits 4096
-
 # 暗号化フィールドの復元（*_encrypted を秘密鍵で復号）
 php bin/digtrace decrypt --private-key key.pem trace.jsonl > restored.jsonl
 # JSON 配列として出力
 php bin/digtrace decrypt --private-key key.pem --format json trace.jsonl > restored.json
 ```
+
+レポートは HTTP エントリポイントと実行パターンを決定論的にまとめる証拠ビューです。業務ルールの命名や推論は行わず、必要な判断材料は `keepKeys` / `sqlValueAllowlist` / `addCustom()` で観測事実として残します。
+
+暗号化記録に使う RSA 鍵ペアは、このライブラリでは管理しない。検証用に OpenSSL で作る場合は次のように生成する。
+
+```bash
+# RSA-2048 の秘密鍵を生成
+openssl genrsa -out key.pem 2048
+chmod 600 key.pem
+
+# 公開鍵を取り出し、Config::encryptionPublicKey に設定する
+openssl rsa -in key.pem -pubout -out key.pub.pem
+```
+
+本番では組織の鍵管理ポリシーに従って生成・保管した公開鍵を `Config::encryptionPublicKey` に設定し、秘密鍵はサーバに置かない。
 
 ## エラー・失敗の扱い
 

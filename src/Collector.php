@@ -90,7 +90,7 @@ class Collector implements CollectorInterface
     // CollectorInterface 実装
     // -------------------------------------------------------------------------
 
-    public function start(HttpInput $http, Flow $flow)
+    public function start(HttpInput $http, $flow = null)
     {
         $this->traceId           = $this->generateUuid();
         $this->startedAt         = date('c');
@@ -108,13 +108,11 @@ class Collector implements CollectorInterface
         return $this->traceId;
     }
 
-    public function isSampled()
-    {
-        return true;
-    }
-
     public function addSql($statement, array $binds = [], $source = 'unknown')
     {
+        if ($this->traceId === null) {
+            return;
+        }
         if ($this->isTimelineFull()) {
             return;
         }
@@ -174,6 +172,9 @@ class Collector implements CollectorInterface
 
     public function addCustom($label, $data = null)
     {
+        if ($this->traceId === null) {
+            return;
+        }
         if ($this->isTimelineFull()) {
             return;
         }

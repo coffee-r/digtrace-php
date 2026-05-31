@@ -21,7 +21,12 @@ class JsonlSink implements SinkInterface
 
     public function write(array $trace)
     {
-        $line   = json_encode($trace, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+        $json = json_encode($trace, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($json === false) {
+            throw new \RuntimeException('digtrace: failed to encode JSONL line: ' . json_last_error_msg());
+        }
+
+        $line   = $json . "\n";
         // @ で E_WARNING を抑制し、戻り値で失敗を検知して例外に変換する
         $result = @file_put_contents($this->filePath, $line, FILE_APPEND | LOCK_EX);
         if ($result === false) {
