@@ -137,6 +137,39 @@ class SqlValueExtractorTest extends TestCase
         $this->assertSame([], $result);
     }
 
+    public function testExtractColumnsKeepsBoundInsertColumns()
+    {
+        $result = $this->extractor->extractColumns(
+            "INSERT INTO orders (status, user_id) VALUES (?, :uid)",
+            ['ORDERS']
+        );
+
+        $this->assertSame([], $result['filter_columns']);
+        $this->assertSame(['STATUS', 'USER_ID'], $result['write_columns']);
+    }
+
+    public function testExtractColumnsClassifiesSetAndWhereColumns()
+    {
+        $result = $this->extractor->extractColumns(
+            "UPDATE orders SET status = ?, total = {parameter} WHERE id = :id AND orders.user_id >= ?",
+            ['ORDERS']
+        );
+
+        $this->assertSame(['ID', 'ORDERS.USER_ID'], $result['filter_columns']);
+        $this->assertSame(['STATUS', 'TOTAL'], $result['write_columns']);
+    }
+
+    public function testExtractColumnsSupportsOnHavingAndSqliteQuotes()
+    {
+        $result = $this->extractor->extractColumns(
+            'SELECT * FROM [orders] o JOIN [users] u ON o.[user_id] = u.[id] HAVING [total] >= {parameter}',
+            ['ORDERS', 'USERS']
+        );
+
+        $this->assertSame(['O.USER_ID', 'TOTAL'], $result['filter_columns']);
+        $this->assertSame([], $result['write_columns']);
+    }
+
     public function testQuotedColumnAndEscapedQuoteValue()
     {
         $result = $this->extractor->extract(

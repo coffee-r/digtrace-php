@@ -21,8 +21,6 @@ interface SinkInterface
      *                      必須トップレベルキー:
      *                        'schema_version' int(1)
      *                        'trace_id'       string
-     *                        'app_name'       string
-     *                        'env'            string
      *                        'started_at'     string  ISO 8601 date-time
      *                        'flow'           array   {flow_id: string|null, seq: int|null}
      *                        'redaction'      array   {tokenized: bool, token_format: string|null}

@@ -331,6 +331,9 @@ class Aggregator
                 'operation'            => isset($event['operation']) ? $event['operation'] : 'UNKNOWN',
                 'tables'               => isset($event['tables']) && is_array($event['tables']) ? $event['tables'] : [],
                 'statement_hash'       => isset($event['statement_hash']) ? $event['statement_hash'] : '',
+                'statement_fingerprint' => isset($event['statement_fingerprint']) && is_array($event['statement_fingerprint'])
+                    ? $event['statement_fingerprint']
+                    : null,
                 'statement_normalized' => '',
             ];
 

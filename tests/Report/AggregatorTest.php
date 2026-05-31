@@ -34,6 +34,13 @@ class AggregatorTest extends TestCase
             'tables'               => ['PRODUCTS'],
             'statement_normalized' => 'SELECT * FROM products WHERE id = {parameter}',
             'statement_hash'       => 'sha256:abc123',
+            'statement_fingerprint' => [
+                'op' => 'SELECT',
+                'tables' => ['PRODUCTS'],
+                'filter_columns' => ['ID'],
+                'write_columns' => [],
+                'fp_hash' => 'fp1:abc123',
+            ],
         ], $overrides);
     }
 
@@ -174,6 +181,17 @@ class AggregatorTest extends TestCase
         $this->assertSame('SELECT:PRODUCTS:sha256:abc123 x2 -> STATUS:200 -> TRUNCATED:500', $pattern['compressed_flow_signature']);
         $this->assertTrue($pattern['truncated']);
         $this->assertSame(500, $pattern['truncation_limit']);
+    }
+
+    public function testAggregateExposesStatementFingerprintInSqlFlow()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace(['timeline' => [$this->makeSqlEvent()]]);
+
+        $report = $agg->aggregate([$trace]);
+        $step = $report['observed_entrypoints'][0]['patterns'][0]['sql_flow'][0];
+
+        $this->assertSame('fp1:abc123', $step['statement_fingerprint']['fp_hash']);
     }
 
     public function testTruncationChangesPattern()

@@ -12,8 +12,6 @@
 |---|---|---|
 | `schema_version` | `1` (const) | スキーマバージョン |
 | `trace_id` | string | リクエスト 1 件の識別子 |
-| `app_name` | string | アプリケーション名（例: `"coffee-api"`） |
-| `env` | string | 環境名（例: `"production"`, `"staging"`） |
 | `started_at` | string (date-time) | リクエスト開始時刻 |
 | `flow` | object | 任意の調査フロー相関情報（後述） |
 | `redaction` | object | マスキングモードの記録（後述） |
@@ -26,14 +24,13 @@
 
 ## Value Classes
 
-値の記録には 4 種類の表現が存在し、用途によって使い分ける。
+値の記録には次の表現が存在し、用途によって使い分ける。
 
 | サフィックス | 内容 | AI export で残るか |
 |---|---|---|
 | `*_shape` | 構造とスカラー型のみ。実値なし | 残る |
 | `*_tokens` | HMAC トークン。同じ値 → 同じ記号。実値は復元不可 | 残る |
 | `*_values` (HTTP) / `observed_values` (SQL) | `keepKeys` / `sqlValueAllowlist` にマッチしたキーの**実値**。業務分岐（`amount >= 100000` など）を読むための非機微値 | **意図的に残す** |
-| `*_encrypted` | 完全な実値を RSA+AES で暗号化。`encryptionPublicKey` 設定時のみ | 除去される（復号は別途） |
 | `statement_text` | 生 SQL 文字列。`captureText=true` 時のみ・デフォルト off・**平文** | 除去される |
 
 ### 白リスト一本（実値の制御）
@@ -41,11 +38,12 @@
 実値の出力は**デフォルトで一切なし**（`*_shape` のみ）。**明示した白リスト**に載せたキー／列だけが実値として残る:
 
 - `keepKeys`（完全一致・大小無視、デフォルト空）→ HTTP の `*_values` に実値を残す。
+- `keepHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP ヘッダの shape/token を残す。空ならヘッダの存在情報も残さない。
 - `sqlValueAllowlist`（`テーブル名.列名` または `列名`、大小無視、デフォルト空）→ SQL の `observed_values` に実値を残す。
 
-旧 `deny_keys`（黒リスト）は**廃止**。実値は明示オプトインのみなので「黒が白に勝つ」という順序ルールは存在しない。`secret` 設定時の `*_tokens` は全キーに出る（不可逆 HMAC のため平文漏洩なし）。生の実値が必要なときは `encryptionPublicKey` による `*_encrypted`（`bin/digtrace decrypt` で復号）を使う。
+旧 `deny_keys`（黒リスト）は**廃止**。実値は明示オプトインのみなので「黒が白に勝つ」という順序ルールは存在しない。`secret` 設定時の `*_tokens` は全キーに出る（不可逆 HMAC のため平文漏洩なし）。
 
-> **設定キー名について**: ここでは PHP の `Config` プロパティ名（`keepKeys` / `captureText` / `encryptionPublicKey` など camelCase）で表記する。これらは実際の API 名（root `README.md` と一致）。
+> **設定キー名について**: ここでは PHP の `Config` プロパティ名（`keepKeys` / `captureText` など camelCase）で表記する。これらは実際の API 名（root `README.md` と一致）。
 
 ---
 
@@ -86,7 +84,7 @@
 
 ### リクエストヘッダ
 
-`request_headers_shape` はヘッダのキー名と型のみを記録する（値は入らない）。`Authorization`, `X-Api-Key` などの実値が `shape` に出ることはなく、ヘッダの**存在事実**（このエンドポイントは Bearer 認証を要求する、など）だけが残る。`secret` 設定時は `request_headers_tokens` に不可逆 HMAC トークンが入るのみ。
+`request_headers_shape` / `request_headers_tokens` は `keepHeaderKeys` に一致したヘッダだけを記録する。デフォルトは空なので、ヘッダの存在情報も残らない。`Authorization`, `Cookie`, `X-Api-Key` などは shape だけでも機微になりうるため、必要なヘッダ名だけを明示する。
 
 ---
 
@@ -99,11 +97,17 @@
 SQL ステートメント 1 件。
 
 - `statement_normalized` — リテラルを `{parameter}` に置換した正規化 SQL。同一パターンのグルーピング基準。
-- `statement_hash` — `sha256:<hex>` (`statement_normalized` のハッシュ)。実行をまたいで安定。`effects[].statement_hash` と対応。
+- `statement_hash` — `sha256:<hex>` (`statement_normalized` のハッシュ)。層A。正規化 SQL 文字列の厳密同一性を表し、`effects[].statement_hash` と対応。
+- `statement_fingerprint` — 層B。操作種別、対象テーブル、絞り込み列、書込列から作る意味レベルのフィンガープリント。現在の `digtrace-v1` では必須。
+  - `fp_hash` — `fp1:<hex>`。CI3 の生SQLと Laravel/Eloquent のSQLのように文字列が変わる移行でも、意味レベルの比較材料にする。
+  - `filter_columns` — `WHERE` / `ON` / `HAVING` の比較左辺から抽出した列。
+  - `write_columns` — `INSERT` 列リスト / `UPDATE SET` 左辺から抽出した列。
 - `observed_values` — `sqlValueAllowlist` にマッチした列の実値。`{ "ORDERS.STATUS": { redacted: false, values: ["shipped"] } }` のような形式。実行された SQL に値が埋め込まれている場合（INSERT/UPDATE SET/WHERE）に正規表現ベースの best-effort で抽出する。関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがある。現状は実値（`redacted: false`）のみ。トークン化版（`redacted: true`）は将来拡張。
 - `analysis.analyzer` — 解析方式。現状は `regex`。
 - `analysis.dialect` — 解析に使った SQL 方言（`oracle` / `sqlite`）。`Collector` に注入したアナライザに対応する。
 - `analysis.warnings` — 信頼度が下がる原因を列挙。`query_history_capture_has_no_bind_values`（CI3 の query_history 経由では bind 分離ができない）など。
+
+層Aは「SQL文字列パターンが同じか」を見る署名で、層Bは「操作対象と列集合が同じか」を見る署名です。移行調査では、層Aの差分はノイズになりやすいため、`bin/digtrace export` が出す層B込みのコンパクトJSONを legacy / target で2回作り、AIや人が差分説明を読む運用を想定します。
 
 ### type: "custom"
 
@@ -126,9 +130,14 @@ SQL ステートメント 1 件。
 **AI 分析で効くフィールド**（そのまま AI に渡すとき注目するもの）:
 - `statement_normalized` — SQLパターンの読み取り
 - `statement_hash` — effects との突合
+- `statement_fingerprint` — 跨フレームワーク移行での SQL 意味比較
 - `observed_values` — allowlist に入れた列の業務判断材料
 - `effects[]` — 書き込み操作のサマリ（timeline を全スキャンしなくて済む）
 - `query_values` / `request_values` — リクエストの業務的な判断材料
+
+AI 送付用には、生の JSONL ではなく `bin/digtrace export <jsonl...>` の出力を使う。SQL全文は `sql_dictionary` に辞書化され、各実行パターンは短い SQL ID と `fp_hash` を参照するため、通常の `report.md` よりトークンを抑えられる。
+
+旧系/新系の移行評価では、legacy / target を別々に `export` し、必要に応じて両プロジェクトのコード、DDL、fixture と一緒に AI や人間へ渡す。v1 では新旧自動比較コマンドは提供しない。
 
 ---
 
@@ -136,8 +145,7 @@ SQL ステートメント 1 件。
 
 実装が決まった時点で追加する。`timeline` 系はスキーマの `oneOf` に未収録。
 
-- `type: "external_http"` — 外部 WebAPI 呼び出し（`url_pattern` / `url_encrypted`）。決済・配送など副作用を持つ呼び出しの移行調査で重要。
+- `type: "external_http"` — 外部 WebAPI 呼び出し（`url_pattern` など）。決済・配送など副作用を持つ呼び出しの移行調査で重要。
 - `type: "file"` — ファイルパスの読み書き
 - `type: "session"` — セッションへの書き込み
-- AI export プロファイル — null・平文・`*_encrypted`・`*_tokens` を除去し、空の `{}`/`[]` を省いて AI 送付用にトークンを削減する JSONL 変換（`bin/digtrace` への将来コマンド）
 - `observed_values` のトークン化版（`redacted: true`）

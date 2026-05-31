@@ -9,6 +9,7 @@ use CoffeeR\Digtrace\Http\HttpInput;
 use CoffeeR\Digtrace\Http\HttpResponse;
 use CoffeeR\Digtrace\Sink\SinkInterface;
 use CoffeeR\Digtrace\Sql\OracleSqlAnalyzer;
+use CoffeeR\Digtrace\Sql\SqlAnalyzerInterface;
 use CoffeeR\Digtrace\Sql\SqliteSqlAnalyzer;
 use PHPUnit\Framework\TestCase;
 
@@ -41,11 +42,44 @@ class FailingSink implements SinkInterface
     }
 }
 
+class ThrowingSqlAnalyzer implements SqlAnalyzerInterface
+{
+    public function normalize($statement)
+    {
+        throw new \RuntimeException('boom');
+    }
+
+    public function replaceWithCallback($statement, callable $replacer)
+    {
+        return $statement;
+    }
+
+    public function hash($normalized)
+    {
+        return 'sha256:unused';
+    }
+
+    public function extractOperation($statement)
+    {
+        return 'UNKNOWN';
+    }
+
+    public function extractTables($statement)
+    {
+        return [];
+    }
+
+    public function buildAnalysis($statement, $operation, array $tables, $source)
+    {
+        return ['analyzer' => 'throwing', 'operation_confidence' => 'unknown', 'tables_confidence' => 'unknown', 'warnings' => []];
+    }
+}
+
 class CollectorTest extends TestCase
 {
     private function makeCollector(?Config $config = null, $sink = null, $analyzer = null)
     {
-        $config   = $config   ?? new Config('test-app', 'testing');
+        $config   = $config   ?? new Config();
         $sink     = $sink     ?? new CaptureSink();
         $analyzer = $analyzer ?? new SqliteSqlAnalyzer();
         return new Collector($config, $sink, $analyzer);
@@ -95,15 +129,13 @@ class CollectorTest extends TestCase
         $this->assertNotNull($trace);
 
         // 必須トップレベルキーの確認
-        $required = ['schema_version','trace_id','app_name','env',
+        $required = ['schema_version','trace_id',
                      'started_at','flow','redaction','http','timeline','effects','errors'];
         foreach ($required as $key) {
             $this->assertArrayHasKey($key, $trace, "Missing key: $key");
         }
 
         $this->assertSame(1, $trace['schema_version']);
-        $this->assertSame('test-app', $trace['app_name']);
-        $this->assertSame('testing', $trace['env']);
         $this->assertSame('flow-abc', $trace['flow']['flow_id']);
         $this->assertSame(1, $trace['flow']['seq']);
         $this->assertSame('POST', $trace['http']['method']);
@@ -183,7 +215,7 @@ class CollectorTest extends TestCase
     {
         // SqlAnalyzerInterface は必須・null 不可（型で強制）
         $this->expectException(\TypeError::class);
-        new Collector(new Config('app', 'test'), new CaptureSink(), null);
+        new Collector(new Config(), new CaptureSink(), null);
     }
 
     public function testAddSqlWithBinds()
@@ -228,7 +260,7 @@ class CollectorTest extends TestCase
 
     public function testObservedValuesExtractedWhenAllowlisted()
     {
-        $config    = new Config('test-app', 'testing', null, ['sqlValueAllowlist' => ['orders.status']]);
+        $config    = new Config(null, ['sqlValueAllowlist' => ['orders.status']]);
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
@@ -294,7 +326,7 @@ class CollectorTest extends TestCase
 
     public function testEffectsDisabledWhenCaptureEffectsFalse()
     {
-        $config    = new Config('app', 'test', null, ['captureEffects' => false]);
+        $config    = new Config(null, ['captureEffects' => false]);
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
@@ -328,7 +360,7 @@ class CollectorTest extends TestCase
 
     public function testTimelineTruncationLimit()
     {
-        $config    = new Config('app', 'test', null, ['maxTimelineSize' => 2]);
+        $config    = new Config(null, ['maxTimelineSize' => 2]);
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
@@ -345,7 +377,7 @@ class CollectorTest extends TestCase
 
     public function testTimelineTruncationErrorAddedOnce()
     {
-        $config    = new Config('app', 'test', null, ['maxTimelineSize' => 1]);
+        $config    = new Config(null, ['maxTimelineSize' => 1]);
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
@@ -360,6 +392,20 @@ class CollectorTest extends TestCase
             function ($e) { return $e['type'] === 'capture_failure'; }
         );
         $this->assertCount(1, $captureFailures);
+    }
+
+    public function testAddSqlAnalyzerFailureDoesNotPropagateException()
+    {
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector(null, $sink, new ThrowingSqlAnalyzer());
+        $collector->start($this->makeHttp(), new Flow());
+        $collector->addSql('SELECT secret FROM users WHERE id = 1');
+        $collector->finish($this->makeResponse());
+
+        $this->assertSame([], $sink->captured['timeline']);
+        $this->assertSame('capture_failure', $sink->captured['errors'][0]['type']);
+        $this->assertSame('Collector::addSql', $sink->captured['errors'][0]['at']);
+        $this->assertStringNotContainsString('SELECT secret', $sink->captured['errors'][0]['message']);
     }
 
     // -------------------------------------------------------------------------
@@ -389,7 +435,7 @@ class CollectorTest extends TestCase
 
     public function testShapeDepthLimitInResponse()
     {
-        $config = new Config('app', 'test', null, ['maxDepth' => 2]);
+        $config = new Config(null, ['maxDepth' => 2]);
         $sink   = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
@@ -455,13 +501,66 @@ class CollectorTest extends TestCase
         $this->assertSame(1, $views[0]['seq']);
     }
 
+    public function testRequestHeadersAreNotCapturedByDefault()
+    {
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector(new Config('my-secret'), $sink);
+        $http = $this->makeHttp('GET', '/headers');
+        $http->requestHeadersRaw = [
+            'Authorization' => 'Bearer secret',
+            'X-Api-Key' => 'api-secret',
+        ];
+
+        $collector->start($http, new Flow());
+        $collector->finish($this->makeResponse());
+
+        $this->assertArrayNotHasKey('request_headers_shape', $sink->captured['http']);
+        $this->assertArrayNotHasKey('request_headers_tokens', $sink->captured['http']);
+    }
+
+    public function testRequestHeadersCaptureWhitelistOnly()
+    {
+        $config    = new Config('my-secret', ['keepHeaderKeys' => ['X-Request-Id']]);
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector($config, $sink);
+        $http = $this->makeHttp('GET', '/headers');
+        $http->requestHeadersRaw = [
+            'Authorization' => 'Bearer secret',
+            'X-Request-Id' => 'req-123',
+        ];
+
+        $collector->start($http, new Flow());
+        $collector->finish($this->makeResponse());
+
+        $this->assertSame(['X-Request-Id' => 'string'], $sink->captured['http']['request_headers_shape']);
+        $this->assertArrayHasKey('X-Request-Id', $sink->captured['http']['request_headers_tokens']);
+        $this->assertArrayNotHasKey('Authorization', $sink->captured['http']['request_headers_shape']);
+    }
+
+    public function testShapeTruncationRecordsErrorAndContinues()
+    {
+        $config    = new Config(null, ['maxShapeNodes' => 3]);
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector($config, $sink);
+        $http = $this->makeHttp('POST', '/large');
+        $http->requestRaw = ['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4];
+
+        $collector->start($http, new Flow());
+        $collector->finish($this->makeResponse(200));
+
+        $this->assertSame(200, $sink->captured['http']['status']);
+        $this->assertSame('...', $sink->captured['http']['request_shape']['c']);
+        $this->assertSame('capture_failure', $sink->captured['errors'][0]['type']);
+        $this->assertSame('request_shape', $sink->captured['errors'][0]['at']);
+    }
+
     // -------------------------------------------------------------------------
     // HMAC トークン化
     // -------------------------------------------------------------------------
 
     public function testTokenizationFieldsPresent()
     {
-        $config    = new Config('app', 'test', 'my-secret');
+        $config    = new Config('my-secret');
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $http           = $this->makeHttp('GET', '/products/42');

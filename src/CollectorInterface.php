@@ -14,7 +14,7 @@ use CoffeeR\Digtrace\Http\HttpResponse;
  *
  * 外部 HTTP 呼び出しの記録は addCustom('http_call', ...) で代替する。
  *
- * app_name / env / SinkInterface は実装クラスのコンストラクタ（Config）に注入する。
+ * SinkInterface は実装クラスのコンストラクタに注入する。
  * アプリ本体への影響ゼロが原則: 書き込み失敗を含むいかなるエラーも例外として外に出さない。
  */
 interface CollectorInterface

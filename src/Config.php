@@ -7,12 +7,6 @@ namespace CoffeeR\Digtrace;
  */
 class Config
 {
-    /** @var string  アプリ識別子。例: 'legacy-shop' */
-    public $appName;
-
-    /** @var string  環境識別子。例: 'production', 'staging' */
-    public $env;
-
     /** @var string|null  HMAC-SHA256 の共有シークレット。設定時に *_tokens フィールドを記録。null = トークン化なし */
     public $secret = null;
 
@@ -22,6 +16,12 @@ class Config
      *             ここに明示したキーだけが *_values に実値として記録される。
      */
     public $keepKeys = [];
+
+    /**
+     * @var array  記録する HTTP ヘッダ名の白リスト（完全一致・大小無視）。
+     *             デフォルトは空＝ヘッダの存在情報も記録しない。
+     */
+    public $keepHeaderKeys = [];
 
     /**
      * @var array  SQL の列値を残す白リスト。
@@ -56,30 +56,17 @@ class Config
     public $maxTimelineSize = 500;
 
     /**
-     * @var string|null  RSA 公開鍵の PEM 文字列。
-     *                   設定時、各トレースの query/request/bind 値を暗号化して
-     *                   *_encrypted フィールドとして記録する。
-     *                   復号は `bin/digtrace decrypt --private-key key.pem` で行う。
-     */
-    public $encryptionPublicKey = null;
-
-    /**
-     * @param string      $appName
-     * @param string      $env
      * @param string|null $secret
      * @param array       $options  上記パブリックプロパティへの上書きマップ
      */
-    public function __construct($appName, $env, $secret = null, array $options = [])
+    public function __construct($secret = null, array $options = [])
     {
-        $this->appName = $appName;
-        $this->env     = $env;
-        $this->secret  = $secret;
+        $this->secret = $secret;
 
         $known = [
-            'keepKeys', 'sqlValueAllowlist',
+            'keepKeys', 'keepHeaderKeys', 'sqlValueAllowlist',
             'captureText', 'captureEffects',
             'tokenHmacLength', 'maxDepth', 'maxShapeNodes', 'maxTimelineSize',
-            'encryptionPublicKey',
         ];
         foreach ($options as $key => $value) {
             if (in_array($key, $known, true)) {

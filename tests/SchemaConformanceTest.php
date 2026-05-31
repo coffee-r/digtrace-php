@@ -95,15 +95,17 @@ class SchemaConformanceTest extends TestCase
 
     public function testMinimalRecordConforms()
     {
-        $record = $this->buildRecord(new Config('app', 'production'), function (Collector $c) {
+        $record = $this->buildRecord(new Config(), function (Collector $c) {
             $c->addSql("SELECT * FROM users WHERE id = 1");
         });
+        $this->assertArrayHasKey('statement_fingerprint', $record['timeline'][0]);
+        $this->assertStringStartsWith('fp1:', $record['timeline'][0]['statement_fingerprint']['fp_hash']);
         $this->assertValidRecord($record, 'minimal');
     }
 
     public function testTokenizedRecordConforms()
     {
-        $config = new Config('app', 'production', 'shared-secret');
+        $config = new Config('shared-secret');
         $record = $this->buildRecord($config, function (Collector $c) {
             $http = new HttpInput('POST', '/orders');
             $http->queryRaw          = ['page' => '2'];
@@ -116,26 +118,9 @@ class SchemaConformanceTest extends TestCase
         $this->assertValidRecord($record, 'tokenized');
     }
 
-    public function testEncryptedRecordConforms()
-    {
-        $res     = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
-        $details = openssl_pkey_get_details($res);
-        $pubPem  = $details['key'];
-
-        $config = new Config('app', 'production', null, ['encryptionPublicKey' => $pubPem]);
-        $record = $this->buildRecord($config, function (Collector $c) {
-            $http = new HttpInput('POST', '/orders');
-            $http->requestRaw = ['card' => '4111111111111111'];
-            $c->start($http, new Flow());
-            $c->addSql('INSERT INTO orders (qty) VALUES (?)', [3]);
-        });
-        $this->assertArrayHasKey('encryption_envelope', $record, 'envelope should be present');
-        $this->assertValidRecord($record, 'encrypted');
-    }
-
     public function testObservedValuesRecordConforms()
     {
-        $config = new Config('app', 'production', null, ['sqlValueAllowlist' => ['orders.status']]);
+        $config = new Config(null, ['sqlValueAllowlist' => ['orders.status']]);
         $record = $this->buildRecord($config, function (Collector $c) {
             $c->addSql("INSERT INTO orders (user_id, status) VALUES (10, 'shipped')");
         });
@@ -149,7 +134,7 @@ class SchemaConformanceTest extends TestCase
     public function testHtmlViewsRecordConforms()
     {
         $sink      = new SchemaCaptureSink();
-        $collector = new Collector(new Config('app', 'production'), $sink, new OracleSqlAnalyzer());
+        $collector = new Collector(new Config(), $sink, new OracleSqlAnalyzer());
         $collector->start(new HttpInput('GET', '/products/1'), new Flow());
         $response               = new HttpResponse();
         $response->status       = 200;

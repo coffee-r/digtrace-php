@@ -13,6 +13,9 @@ class Redactor
     /** @var Config */
     private $config;
 
+    /** @var string|null */
+    private $lastTruncation = null;
+
     public function __construct(Config $config)
     {
         $this->config = $config;
@@ -26,8 +29,29 @@ class Redactor
      */
     public function isKept($key)
     {
+        return $this->matchesKey($key, $this->config->keepKeys);
+    }
+
+    /**
+     * キーが keepHeaderKeys に完全一致するかを判定する（大小無視）。
+     *
+     * @param string $key
+     * @return bool
+     */
+    public function isHeaderKept($key)
+    {
+        return $this->matchesKey($key, $this->config->keepHeaderKeys);
+    }
+
+    /**
+     * @param string $key
+     * @param array  $keys
+     * @return bool
+     */
+    private function matchesKey($key, array $keys)
+    {
         $lower = strtolower((string)$key);
-        foreach ($this->config->keepKeys as $keep) {
+        foreach ($keys as $keep) {
             if (strtolower($keep) === $lower) {
                 return true;
             }
@@ -46,8 +70,19 @@ class Redactor
      */
     public function shape($value, $key = null)
     {
+        $this->lastTruncation = null;
         $nodesLeft = $this->config->maxShapeNodes;
         return $this->shapeInternal($value, $key, 0, $nodesLeft);
+    }
+
+    /**
+     * 直前の shape/token 生成で打ち切りが起きた場合、その理由を返す。
+     *
+     * @return string|null
+     */
+    public function lastTruncation()
+    {
+        return $this->lastTruncation;
     }
 
     /**
@@ -60,11 +95,13 @@ class Redactor
     private function shapeInternal($value, $key, $depth, &$nodesLeft)
     {
         if ($nodesLeft <= 0) {
+            $this->lastTruncation = 'maxShapeNodes';
             return '...';
         }
         $nodesLeft--;
 
         if ($depth >= $this->config->maxDepth) {
+            $this->lastTruncation = 'maxDepth';
             return '...';
         }
 
@@ -93,12 +130,22 @@ class Redactor
             if ($isList) {
                 $shapes = [];
                 foreach ($value as $item) {
+                    if ($nodesLeft <= 0) {
+                        $this->lastTruncation = 'maxShapeNodes';
+                        $shapes[] = '...';
+                        break;
+                    }
                     $shapes[] = $this->shapeInternal($item, null, $depth + 1, $nodesLeft);
                 }
                 return $this->uniqueShapes($shapes);
             } else {
                 $result = [];
                 foreach ($value as $k => $v) {
+                    if ($nodesLeft <= 0) {
+                        $this->lastTruncation = 'maxShapeNodes';
+                        $result[$k] = '...';
+                        break;
+                    }
                     $result[$k] = $this->shapeInternal($v, $k, $depth + 1, $nodesLeft);
                 }
                 return $result;
@@ -152,6 +199,7 @@ class Redactor
      */
     public function buildTokens($data)
     {
+        $this->lastTruncation = null;
         $nodesLeft = $this->config->maxShapeNodes;
         return $this->buildTokensInternal($data, 0, $nodesLeft);
     }
@@ -165,11 +213,13 @@ class Redactor
     private function buildTokensInternal($data, $depth, &$nodesLeft)
     {
         if ($nodesLeft <= 0) {
+            $this->lastTruncation = 'maxShapeNodes';
             return '...';
         }
         $nodesLeft--;
 
         if ($depth >= $this->config->maxDepth) {
+            $this->lastTruncation = 'maxDepth';
             return '...';
         }
 
@@ -184,6 +234,11 @@ class Redactor
         if ($isList) {
             $result = [];
             foreach (array_values($data) as $value) {
+                if ($nodesLeft <= 0) {
+                    $this->lastTruncation = 'maxShapeNodes';
+                    $result[] = '...';
+                    break;
+                }
                 $result[] = $this->buildTokensInternal($value, $depth + 1, $nodesLeft);
             }
             return $result;
@@ -191,6 +246,11 @@ class Redactor
 
         $result = [];
         foreach ($data as $key => $value) {
+            if ($nodesLeft <= 0) {
+                $this->lastTruncation = 'maxShapeNodes';
+                $result[$key] = '...';
+                break;
+            }
             if (is_array($value) || is_object($value)) {
                 $result[$key] = $this->buildTokensInternal($value, $depth + 1, $nodesLeft);
             } else {
@@ -211,6 +271,23 @@ class Redactor
         $result = [];
         foreach ($data as $key => $value) {
             if ($this->isKept($key)) {
+                $result[$key] = $value;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * 配列から keepHeaderKeys に一致するヘッダだけを抽出する。
+     *
+     * @param array $headers
+     * @return array
+     */
+    public function buildHeaders(array $headers)
+    {
+        $result = [];
+        foreach ($headers as $key => $value) {
+            if ($this->isHeaderKept($key)) {
                 $result[$key] = $value;
             }
         }

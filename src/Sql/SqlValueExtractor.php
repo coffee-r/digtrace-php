@@ -40,6 +40,30 @@ class SqlValueExtractor
     }
 
     /**
+     * allowlist・値の有無に関係なく、SQL に現れる列を分類して返す。
+     *
+     * 層Bフィンガープリント用の値非依存抽出。既存の実値抽出とは別経路にして、
+     * バインドプレースホルダや {parameter} でも列名を落とさない。
+     *
+     * @param string   $statement  生 SQL または statement_normalized
+     * @param string[] $tables
+     * @return array  ['filter_columns' => string[], 'write_columns' => string[]]
+     */
+    public function extractColumns($statement, array $tables)
+    {
+        $writeColumns = array_merge(
+            $this->columnsFromInsert($statement),
+            $this->columnsFromSet($statement)
+        );
+        $filterColumns = $this->columnsFromWhere($statement);
+
+        return [
+            'filter_columns' => $this->uniqueSortedColumns($filterColumns),
+            'write_columns'  => $this->uniqueSortedColumns($writeColumns),
+        ];
+    }
+
+    /**
      * SQL 文からすべての列→値ペアを抽出する（テーブルは関連するものを補完）。
      *
      * @param string   $statement
@@ -103,6 +127,29 @@ class SqlValueExtractor
     }
 
     /**
+     * INSERT INTO t (col1, col2) の列リストだけを抽出する。
+     *
+     * @param string $statement
+     * @return string[]
+     */
+    private function columnsFromInsert($statement)
+    {
+        if (!preg_match(
+            '/INSERT\s+INTO\s+(?:`[^`]+`|"[^"]+"|\[[^\]]+\]|[\w.]+)\s*\(([^)]+)\)\s*VALUES\b/is',
+            $statement,
+            $m
+        )) {
+            return [];
+        }
+
+        $columns = [];
+        foreach ($this->splitList($m[1]) as $col) {
+            $columns[] = $this->normalizeColumnName($col);
+        }
+        return $columns;
+    }
+
+    /**
      * UPDATE ... SET col1 = val1, col2 = val2 のペアを抽出する。
      *
      * @param string   $statement
@@ -121,6 +168,21 @@ class SqlValueExtractor
     }
 
     /**
+     * SET 句の代入左辺だけを抽出する。
+     *
+     * @param string $statement
+     * @return string[]
+     */
+    private function columnsFromSet($statement)
+    {
+        if (!preg_match('/\bSET\b(.+?)(?:\bWHERE\b|$)/is', $statement, $m)) {
+            return [];
+        }
+
+        return $this->columnsFromAssignments($m[1]);
+    }
+
+    /**
      * WHERE / ON / HAVING の col = val 等を抽出する。
      *
      * テーブルの特定は難しいため table = null で返す（allowlist の列名のみ一致）。
@@ -136,6 +198,82 @@ class SqlValueExtractor
         }
 
         return $this->parseAssignments($m[1], null);
+    }
+
+    /**
+     * WHERE / ON / HAVING 句の比較左辺だけを抽出する。
+     *
+     * @param string $statement
+     * @return string[]
+     */
+    private function columnsFromWhere($statement)
+    {
+        if (!preg_match_all('/\b(?:WHERE|ON|HAVING)\b(.+?)(?=\b(?:GROUP\s+BY|ORDER\s+BY|LIMIT|UNION|WHERE|ON|HAVING)\b|$)/is', $statement, $matches)) {
+            return [];
+        }
+
+        $columns = [];
+        foreach ($matches[1] as $section) {
+            $columns = array_merge($columns, $this->columnsFromAssignments($section));
+        }
+        return $columns;
+    }
+
+    /**
+     * 比較・代入式の左辺識別子を抽出する。
+     *
+     * @param string $text
+     * @return string[]
+     */
+    private function columnsFromAssignments($text)
+    {
+        $ident = '(?:`[^`]+`|"[^"]+"|\[[^\]]+\]|[a-zA-Z_][a-zA-Z0-9_$#]*)';
+        $qualified = $ident . '(?:\s*\.\s*' . $ident . ')?';
+        $pattern = '/(' . $qualified . ')\s*(?:=|<>|!=|<=|>=|<|>)\s*/i';
+
+        if (!preg_match_all($pattern, $text, $matches)) {
+            return [];
+        }
+
+        $columns = [];
+        foreach ($matches[1] as $col) {
+            $columns[] = $this->normalizeColumnName($col);
+        }
+        return $columns;
+    }
+
+    /**
+     * 識別子クォートを外して大文字化する。テーブル修飾は呼び出し側で扱う。
+     *
+     * @param string $name
+     * @return string
+     */
+    private function normalizeColumnName($name)
+    {
+        $parts = preg_split('/\s*\.\s*/', trim($name));
+        $normalized = [];
+        foreach ($parts as $part) {
+            $normalized[] = strtoupper($this->stripQuotes($part));
+        }
+        return implode('.', $normalized);
+    }
+
+    /**
+     * @param string[] $columns
+     * @return string[]
+     */
+    private function uniqueSortedColumns(array $columns)
+    {
+        $result = [];
+        foreach ($columns as $column) {
+            if ($column === '') {
+                continue;
+            }
+            $result[] = $column;
+        }
+        $result = array_values(array_unique($result));
+        sort($result, SORT_STRING);
+        return $result;
     }
 
     /**
@@ -273,7 +411,7 @@ class SqlValueExtractor
     }
 
     /**
-     * バッククォートまたはダブルクォートの識別子クォートを除去する。
+     * バッククォート・ダブルクォート・SQLite 角括弧の識別子クォートを除去する。
      *
      * @param string $name
      * @return string
@@ -283,7 +421,8 @@ class SqlValueExtractor
         $name = trim($name);
         if (
             (substr($name, 0, 1) === '`' && substr($name, -1) === '`') ||
-            (substr($name, 0, 1) === '"' && substr($name, -1) === '"')
+            (substr($name, 0, 1) === '"' && substr($name, -1) === '"') ||
+            (substr($name, 0, 1) === '[' && substr($name, -1) === ']')
         ) {
             return substr($name, 1, -1);
         }

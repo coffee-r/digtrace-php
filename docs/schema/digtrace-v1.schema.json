@@ -7,8 +7,6 @@
   "required": [
     "schema_version",
     "trace_id",
-    "app_name",
-    "env",
     "started_at",
     "flow",
     "redaction",
@@ -20,8 +18,6 @@
   "properties": {
     "schema_version": { "const": 1 },
     "trace_id":    { "type": "string" },
-    "app_name":    { "type": "string", "description": "Application identifier. e.g. 'legacy-shop', 'coffee-api'" },
-    "env":         { "type": "string", "description": "e.g. 'production', 'staging', 'local'" },
     "started_at":  { "type": "string", "format": "date-time" },
     "flow":        { "$ref": "#/$defs/flow" },
     "redaction":   { "$ref": "#/$defs/redaction_meta" },
@@ -100,8 +96,8 @@
         "response_kind":  { "enum": ["json", "html", "other", null], "description": "json = JSON body captured in response_shape. html = views[] captured, body not recorded. other/null = neither." },
         "content_type":   { "type": ["string", "null"] },
 
-        "request_headers_shape":  { "description": "Key names and scalar types of request headers. Values never appear here." },
-        "request_headers_tokens": { "description": "HMAC tokens for request header values. null when no secret." },
+        "request_headers_shape":  { "description": "Key names and scalar types of request headers allowed by Config keepHeaderKeys. Values never appear here. Omitted when keepHeaderKeys is empty or no header matches." },
+        "request_headers_tokens": { "description": "HMAC tokens for request header values allowed by Config keepHeaderKeys. Omitted when no secret, keepHeaderKeys is empty, or no header matches." },
 
         "query_shape":    { "description": "Structure/types of URL query string parameters." },
         "query_tokens":   { "description": "HMAC tokens for query parameter values. null when no secret." },
@@ -139,7 +135,7 @@
       "type": "object",
       "required": [
         "seq", "type", "operation", "tables",
-        "statement_normalized", "statement_hash",
+        "statement_normalized", "statement_hash", "statement_fingerprint",
         "bind_shape", "observed_values", "analysis"
       ],
       "properties": {
@@ -164,6 +160,10 @@
           "type": "string",
           "description": "sha256:<hex> of statement_normalized. Stable across runs; links to effects[].statement_hash."
         },
+        "statement_fingerprint": {
+          "$ref": "#/$defs/statement_fingerprint",
+          "description": "Layer-B semantic fingerprint derived from operation, tables, filter columns, and write columns."
+        },
 
         "bind_shape":       { "description": "Structure/types of bind parameters." },
         "bind_tokens":      { "description": "HMAC tokens for bind values. null when no secret." },
@@ -177,6 +177,20 @@
         "analysis": { "$ref": "#/$defs/sql_analysis" }
       },
       "additionalProperties": true
+    },
+
+    "statement_fingerprint": {
+      "description": "Layer-B SQL semantic fingerprint. Unlike statement_hash, it is intended to survive SQL text changes across framework migrations.",
+      "type": "object",
+      "required": ["op", "tables", "filter_columns", "write_columns", "fp_hash"],
+      "properties": {
+        "op":             { "type": "string", "description": "Operation extracted from the SQL, e.g. SELECT / INSERT / UPDATE." },
+        "tables":         { "type": "array", "items": { "type": "string" }, "description": "Uppercase table names used for the fingerprint view." },
+        "filter_columns": { "type": "array", "items": { "type": "string" }, "description": "Columns used in WHERE / ON / HAVING comparisons." },
+        "write_columns":  { "type": "array", "items": { "type": "string" }, "description": "Columns written by INSERT / UPDATE SET." },
+        "fp_hash":        { "type": "string", "description": "fp1:<hex> hash of the canonical Layer-B fingerprint payload." }
+      },
+      "additionalProperties": false
     },
 
     "observed_column": {

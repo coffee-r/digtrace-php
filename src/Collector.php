@@ -6,8 +6,8 @@ use CoffeeR\Digtrace\Http\HttpInput;
 use CoffeeR\Digtrace\Http\HttpResponse;
 use CoffeeR\Digtrace\Redaction\Redactor;
 use CoffeeR\Digtrace\Sink\SinkInterface;
-use CoffeeR\Digtrace\Encryption\Encryptor;
 use CoffeeR\Digtrace\Sql\SqlAnalyzerInterface;
+use CoffeeR\Digtrace\Sql\SqlFingerprinter;
 use CoffeeR\Digtrace\Sql\SqlValueExtractor;
 
 /**
@@ -33,6 +33,9 @@ class Collector implements CollectorInterface
 
     /** @var SqlValueExtractor */
     private $valueExtractor;
+
+    /** @var SqlFingerprinter */
+    private $fingerprinter;
 
     // ---- アクティブトレースの状態 ----
 
@@ -60,12 +63,6 @@ class Collector implements CollectorInterface
     /** @var bool  timeline 打ち切り済みフラグ（エラー追記を1回に限定） */
     private $timelineTruncated = false;
 
-    /** @var Encryptor|null  encryptionPublicKey が設定されている場合に生成 */
-    private $encryptor = null;
-
-    /** @var string|null  トレース開始時に生成する AES キー（全暗号化フィールドで共有） */
-    private $traceAesKey = null;
-
     public function __construct(
         Config $config,
         SinkInterface $sink,
@@ -76,14 +73,7 @@ class Collector implements CollectorInterface
         $this->redactor    = new Redactor($config);
         $this->sqlAnalyzer = $sqlAnalyzer;
         $this->valueExtractor = new SqlValueExtractor();
-
-        if ($config->encryptionPublicKey !== null) {
-            try {
-                $this->encryptor = new Encryptor($config->encryptionPublicKey);
-            } catch (\Exception $e) {
-                error_log('digtrace: invalid encryptionPublicKey, encryption disabled: ' . $e->getMessage());
-            }
-        }
+        $this->fingerprinter = new SqlFingerprinter($this->valueExtractor);
     }
 
     // -------------------------------------------------------------------------
@@ -100,7 +90,6 @@ class Collector implements CollectorInterface
         $this->errors            = [];
         $this->seq               = 0;
         $this->timelineTruncated = false;
-        $this->traceAesKey       = $this->encryptor !== null ? Encryptor::generateAesKey() : null;
     }
 
     public function getActiveTraceId()
@@ -117,57 +106,88 @@ class Collector implements CollectorInterface
             return;
         }
 
-        $this->seq++;
-        $normalized = $this->sqlAnalyzer->normalize($statement);
-        $hash       = $this->sqlAnalyzer->hash($normalized);
-        $operation  = $this->sqlAnalyzer->extractOperation($statement);
-        $tables     = $this->sqlAnalyzer->extractTables($statement);
-        $analysis   = $this->sqlAnalyzer->buildAnalysis($statement, $operation, $tables, $source);
+        try {
+            $this->seq++;
+            $normalized = $this->sqlAnalyzer->normalize($statement);
+            $hash       = $this->sqlAnalyzer->hash($normalized);
+            $operation  = $this->sqlAnalyzer->extractOperation($statement);
+            $tables     = $this->sqlAnalyzer->extractTables($statement);
+            $analysis   = $this->sqlAnalyzer->buildAnalysis($statement, $operation, $tables, $source);
+            $fingerprint = $this->buildSqlFingerprint($statement, $operation, $tables, $analysis);
 
-        // sqlValueAllowlist にマッチした列の実値を抽出する。
-        // 空配列のときは json_encode で [] になりスキーマ（type:object）に違反するため
-        // stdClass にフォールバックして {} を出力する。
-        $observed = $this->valueExtractor->extract($statement, $tables, $this->config->sqlValueAllowlist);
+            // sqlValueAllowlist にマッチした列の実値を抽出する。
+            // 空配列のときは json_encode で [] になりスキーマ（type:object）に違反するため
+            // stdClass にフォールバックして {} を出力する。
+            $observed = $this->valueExtractor->extract($statement, $tables, $this->config->sqlValueAllowlist);
 
-        $event = [
-            'seq'                  => $this->seq,
-            'type'                 => 'sql',
-            'operation'            => $operation,
-            'tables'               => $tables,
-            'statement_normalized' => $normalized,
-            'statement_hash'       => $hash,
-            'bind_shape'           => $this->redactor->shape($binds),
-            'observed_values'      => empty($observed) ? new \stdClass() : $observed,
-            'analysis'             => $analysis,
-        ];
+            $event = [
+                'seq'                  => $this->seq,
+                'type'                 => 'sql',
+                'operation'            => $operation,
+                'tables'               => $tables,
+                'statement_normalized' => $normalized,
+                'statement_hash'       => $hash,
+                'statement_fingerprint' => $fingerprint,
+                'bind_shape'           => $this->safeShape($binds, 'bind_shape'),
+                'observed_values'      => empty($observed) ? new \stdClass() : $observed,
+                'analysis'             => $analysis,
+            ];
 
-        if ($this->config->secret !== null) {
-            $redactor = $this->redactor;
-            $event['statement_tokens'] = $this->sqlAnalyzer->replaceWithCallback(
-                $statement,
-                function ($matched) use ($redactor) {
-                    return $redactor->tokenize($matched);
+            if ($this->config->secret !== null) {
+                $redactor = $this->redactor;
+                $event['statement_tokens'] = $this->sqlAnalyzer->replaceWithCallback(
+                    $statement,
+                    function ($matched) use ($redactor) {
+                        return $redactor->tokenize($matched);
+                    }
+                );
+                if (!empty($binds)) {
+                    $event['bind_tokens'] = $this->safeTokens($binds, 'bind_tokens');
                 }
-            );
-            if (!empty($binds)) {
-                $event['bind_tokens'] = $this->redactor->buildTokens($binds);
             }
-        }
 
-        if ($this->config->captureText) {
-            $event['statement_text'] = $statement;
-        }
+            if ($this->config->captureText) {
+                $event['statement_text'] = $statement;
+            }
 
-        if ($this->encryptor !== null && !empty($binds)) {
+            $this->timeline[] = $event;
+        } catch (\Throwable $e) {
+            $this->addCaptureFailure('sql capture failed: ' . get_class($e), 'Collector::addSql');
+        }
+    }
+
+    /**
+     * SQL の層Bフィンガープリントを例外安全に生成する。
+     *
+     * @param string   $statement
+     * @param string   $operation
+     * @param string[] $tables
+     * @param array    $analysis
+     * @return array
+     */
+    private function buildSqlFingerprint($statement, $operation, array $tables, array $analysis)
+    {
+        $dialect = isset($analysis['dialect']) ? $analysis['dialect'] : null;
+        try {
+            return $this->fingerprinter->fingerprint($statement, $operation, $tables, $dialect);
+        } catch (\Throwable $e) {
             try {
-                $event['bind_encrypted'] = $this->encryptor->encrypt($binds, $this->traceAesKey);
-            } catch (\Exception $e) {
-                // 暗号化失敗はアプリに伝播させない
-                error_log('digtrace: bind encryption failed: ' . $e->getMessage());
+                return (new SqlFingerprinter())->fingerprint('', $operation, $tables, $dialect);
+            } catch (\Throwable $fallbackError) {
+                return [
+                    'op'             => $operation,
+                    'tables'         => $tables,
+                    'filter_columns' => [],
+                    'write_columns'  => [],
+                    'fp_hash'        => 'fp1:' . hash('sha256', json_encode([
+                        'op'             => $operation,
+                        'tables'         => $tables,
+                        'filter_columns' => [],
+                        'write_columns'  => [],
+                    ])),
+                ];
             }
         }
-
-        $this->timeline[] = $event;
     }
 
     public function addCustom($label, $data = null)
@@ -179,15 +199,19 @@ class Collector implements CollectorInterface
             return;
         }
 
-        $this->seq++;
-        $event = [
-            'seq'        => $this->seq,
-            'type'       => 'custom',
-            'label'      => $label,
-            'data_shape' => $this->redactor->shape($data),
-        ];
+        try {
+            $this->seq++;
+            $event = [
+                'seq'        => $this->seq,
+                'type'       => 'custom',
+                'label'      => $label,
+                'data_shape' => $this->safeShape($data, 'custom.data_shape'),
+            ];
 
-        $this->timeline[] = $event;
+            $this->timeline[] = $event;
+        } catch (\Throwable $e) {
+            $this->addCaptureFailure('custom capture failed: ' . get_class($e), 'Collector::addCustom');
+        }
     }
 
     public function addError($type, $message = null, $at = null)
@@ -205,6 +229,15 @@ class Collector implements CollectorInterface
         $this->errors[] = $entry;
     }
 
+    /**
+     * @param string $message
+     * @param string $at
+     */
+    private function addCaptureFailure($message, $at)
+    {
+        $this->addError('capture_failure', $message, $at);
+    }
+
     public function finish(HttpResponse $response)
     {
         if ($this->traceId === null) {
@@ -217,7 +250,7 @@ class Collector implements CollectorInterface
         } catch (\Throwable $e) {
             $this->errors[] = [
                 'type'    => 'capture_failure',
-                'message' => 'record build failed: ' . $e->getMessage(),
+                'message' => 'record build failed: ' . get_class($e),
                 'at'      => 'Collector::finish',
             ];
         }
@@ -263,8 +296,7 @@ class Collector implements CollectorInterface
         }
         if (!$this->timelineTruncated) {
             $this->timelineTruncated = true;
-            $this->addError(
-                'capture_failure',
+            $this->addCaptureFailure(
                 'timeline truncated: limit=' . $this->config->maxTimelineSize,
                 'Collector'
             );
@@ -282,7 +314,6 @@ class Collector implements CollectorInterface
         $this->errors            = [];
         $this->seq               = 0;
         $this->timelineTruncated = false;
-        $this->traceAesKey       = null;
     }
 
     /**
@@ -296,8 +327,6 @@ class Collector implements CollectorInterface
         $record = [
             'schema_version' => 1,
             'trace_id'       => $this->traceId,
-            'app_name'       => $this->config->appName,
-            'env'            => $this->config->env,
             'started_at'     => $this->startedAt,
             'flow'           => [
                 'flow_id' => $this->flow ? $this->flow->flowId : null,
@@ -310,17 +339,6 @@ class Collector implements CollectorInterface
                     : null,
             ],
         ];
-
-        if ($this->encryptor !== null && $this->traceAesKey !== null) {
-            try {
-                $record['encryption_envelope'] = [
-                    'alg' => 'A256GCM+RSA-OAEP',
-                    'k'   => $this->encryptor->encryptAesKey($this->traceAesKey),
-                ];
-            } catch (\Exception $e) {
-                error_log('digtrace: envelope key encryption failed: ' . $e->getMessage());
-            }
-        }
 
         $record['http']     = $this->buildHttpEnvelope($response);
         $record['timeline'] = $this->timeline;
@@ -340,8 +358,6 @@ class Collector implements CollectorInterface
         return [
             'schema_version' => 1,
             'trace_id'       => $this->traceId,
-            'app_name'       => $this->config->appName,
-            'env'            => $this->config->env,
             'started_at'     => $this->startedAt,
             'flow'           => [
                 'flow_id' => $this->flow ? $this->flow->flowId : null,
@@ -388,53 +404,42 @@ class Collector implements CollectorInterface
 
         // リクエストヘッダ
         if ($this->http->requestHeadersRaw !== null) {
-            $env['request_headers_shape'] = $this->redactor->shape($this->http->requestHeadersRaw);
-            if ($this->config->secret !== null) {
-                $env['request_headers_tokens'] = $this->redactor->buildTokens($this->http->requestHeadersRaw);
+            $headers = $this->redactor->buildHeaders($this->http->requestHeadersRaw);
+            if (!empty($headers)) {
+                $env['request_headers_shape'] = $this->safeShape($headers, 'request_headers_shape');
+                if ($this->config->secret !== null) {
+                    $env['request_headers_tokens'] = $this->safeTokens($headers, 'request_headers_tokens');
+                }
             }
         }
 
         // クエリパラメータ
         if ($this->http->queryRaw !== null) {
-            $env['query_shape'] = $this->redactor->shape($this->http->queryRaw);
+            $env['query_shape'] = $this->safeShape($this->http->queryRaw, 'query_shape');
             if ($this->config->secret !== null) {
-                $env['query_tokens'] = $this->redactor->buildTokens($this->http->queryRaw);
+                $env['query_tokens'] = $this->safeTokens($this->http->queryRaw, 'query_tokens');
             }
             $kept = $this->redactor->buildValues($this->http->queryRaw);
             if (!empty($kept)) {
                 $env['query_values'] = $kept;
             }
-            if ($this->encryptor !== null && $this->traceAesKey !== null) {
-                try {
-                    $env['query_encrypted'] = $this->encryptor->encrypt($this->http->queryRaw, $this->traceAesKey);
-                } catch (\Exception $e) {
-                    error_log('digtrace: query encryption failed: ' . $e->getMessage());
-                }
-            }
         }
 
         // リクエストボディ
         if ($this->http->requestRaw !== null) {
-            $env['request_shape'] = $this->redactor->shape($this->http->requestRaw);
+            $env['request_shape'] = $this->safeShape($this->http->requestRaw, 'request_shape');
             if ($this->config->secret !== null) {
-                $env['request_tokens'] = $this->redactor->buildTokens($this->http->requestRaw);
+                $env['request_tokens'] = $this->safeTokens($this->http->requestRaw, 'request_tokens');
             }
             $kept = $this->redactor->buildValues((array)$this->http->requestRaw);
             if (!empty($kept)) {
                 $env['request_values'] = $kept;
             }
-            if ($this->encryptor !== null && $this->traceAesKey !== null) {
-                try {
-                    $env['request_encrypted'] = $this->encryptor->encrypt($this->http->requestRaw, $this->traceAesKey);
-                } catch (\Exception $e) {
-                    error_log('digtrace: request encryption failed: ' . $e->getMessage());
-                }
-            }
         }
 
         // レスポンスボディ（JSON）
         if ($response->responseBodyRaw !== null) {
-            $env['response_shape'] = $this->redactor->shape($response->responseBodyRaw);
+            $env['response_shape'] = $this->safeShape($response->responseBodyRaw, 'response_shape');
         }
 
         // ビュー（HTML レスポンス）
@@ -447,7 +452,7 @@ class Collector implements CollectorInterface
                     'template' => $view['template'],
                 ];
                 if (array_key_exists('vars_raw', $view)) {
-                    $viewEntry['vars_shape'] = $this->redactor->shape($view['vars_raw']);
+                    $viewEntry['vars_shape'] = $this->safeShape($view['vars_raw'], 'view.vars_shape');
                 }
                 $views[] = $viewEntry;
             }
@@ -497,6 +502,51 @@ class Collector implements CollectorInterface
     }
 
     /**
+     * @param mixed  $value
+     * @param string $at
+     * @return mixed
+     */
+    private function safeShape($value, $at)
+    {
+        try {
+            $shape = $this->redactor->shape($value);
+            $this->recordRedactorTruncation($at);
+            return $shape;
+        } catch (\Throwable $e) {
+            $this->addCaptureFailure('shape capture failed: ' . get_class($e), $at);
+            return '...';
+        }
+    }
+
+    /**
+     * @param mixed  $value
+     * @param string $at
+     * @return mixed
+     */
+    private function safeTokens($value, $at)
+    {
+        try {
+            $tokens = $this->redactor->buildTokens($value);
+            $this->recordRedactorTruncation($at);
+            return $tokens;
+        } catch (\Throwable $e) {
+            $this->addCaptureFailure('token capture failed: ' . get_class($e), $at);
+            return '...';
+        }
+    }
+
+    /**
+     * @param string $at
+     */
+    private function recordRedactorTruncation($at)
+    {
+        $reason = $this->redactor->lastTruncation();
+        if ($reason !== null) {
+            $this->addCaptureFailure($at . ' truncated: ' . $reason, $at);
+        }
+    }
+
+    /**
      * path の動的セグメント（pathPattern の {xxx}）を HMAC トークンに置換する。
      *
      * @param string $path
@@ -531,6 +581,23 @@ class Collector implements CollectorInterface
      */
     private function generateUuid()
     {
+        try {
+            $bytes = random_bytes(16);
+            $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+            $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+            $hex = bin2hex($bytes);
+            return sprintf(
+                '%s-%s-%s-%s-%s',
+                substr($hex, 0, 8),
+                substr($hex, 8, 4),
+                substr($hex, 12, 4),
+                substr($hex, 16, 4),
+                substr($hex, 20)
+            );
+        } catch (\Throwable $e) {
+            // PHP 7 compatible fallback for rare entropy failures.
+        }
+
         return sprintf(
             '%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
             mt_rand(0, 0xffff),

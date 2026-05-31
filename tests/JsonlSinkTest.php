@@ -25,7 +25,7 @@ class JsonlSinkTest extends TestCase
     public function testWriteAppendsJsonlLine()
     {
         $sink  = new JsonlSink($this->tmpFile);
-        $trace = ['schema_version' => 1, 'trace_id' => 'abc', 'app_name' => 'test'];
+        $trace = ['schema_version' => 1, 'trace_id' => 'abc'];
         $sink->write($trace);
 
         $content = file_get_contents($this->tmpFile);

@@ -16,76 +16,56 @@ class CliTest extends TestCase
         return [$code, implode("\n", $output)];
     }
 
-    public function testCompareMarkdownCommand()
+    public function testExportJsonCommand()
     {
         $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare ' . $fixture . ' --against ' . $fixture);
-
-        $this->assertSame(0, $code);
-        $this->assertStringStartsWith('# digtrace compare report', $output);
-        $this->assertStringContainsString('No differences found.', $output);
-    }
-
-    public function testCompareJsonCommand()
-    {
-        $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare ' . $fixture . ' --against ' . $fixture . ' --format json');
+        list($code, $output) = $this->runCli('export ' . $fixture . ' --format json');
 
         $this->assertSame(0, $code);
         $decoded = json_decode($output, true);
         $this->assertIsArray($decoded);
-        $this->assertSame(0, $decoded['difference_count']);
+        $this->assertArrayHasKey('sql_dictionary', $decoded);
+        $this->assertArrayHasKey('legend', $decoded);
     }
 
-    public function testCompareRequiresAgainst()
+    public function testExportRequiresFiles()
     {
-        $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare ' . $fixture);
+        list($code, $output) = $this->runCli('export');
 
         $this->assertSame(1, $code);
-        $this->assertStringContainsString('--against', $output);
+        $this->assertStringContainsString('No JSONL files', $output);
     }
 
-    public function testCompareRequiresBaseFiles()
+    public function testExportRejectsUnknownFormat()
     {
         $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare --against ' . $fixture);
-
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('No base JSONL files', $output);
-    }
-
-    public function testCompareRequiresTargetFiles()
-    {
-        $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare ' . $fixture . ' --against');
-
-        $this->assertSame(1, $code);
-        $this->assertStringContainsString('No target JSONL files', $output);
-    }
-
-    public function testCompareRejectsUnknownFormat()
-    {
-        $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
-        list($code, $output) = $this->runCli('compare ' . $fixture . ' --against ' . $fixture . ' --format xml');
+        list($code, $output) = $this->runCli('export ' . $fixture . ' --format xml');
 
         $this->assertSame(1, $code);
         $this->assertStringContainsString('Unknown format', $output);
     }
 
-    public function testCompareKeepsJsonlReaderWarnings()
+    public function testDecryptCommandIsRemoved()
     {
-        $file = tempnam(sys_get_temp_dir(), 'digtrace-invalid-');
-        file_put_contents($file, "{invalid}\n");
-        $fixture = escapeshellarg(__DIR__ . '/fixtures/sample.jsonl');
+        list($code, $output) = $this->runCli('decrypt');
 
-        try {
-            list($code, $output) = $this->runCli('compare ' . escapeshellarg($file) . ' --against ' . $fixture);
-        } finally {
-            @unlink($file);
-        }
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('Unknown command: decrypt', $output);
+    }
+
+    public function testCompareCommandIsRemoved()
+    {
+        list($code, $output) = $this->runCli('compare');
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('Unknown command: compare', $output);
+    }
+
+    public function testHelpDoesNotListCompare()
+    {
+        list($code, $output) = $this->runCli('--help');
 
         $this->assertSame(0, $code);
-        $this->assertStringContainsString('Warning: base:', $output);
+        $this->assertStringNotContainsString('compare', $output);
     }
 }

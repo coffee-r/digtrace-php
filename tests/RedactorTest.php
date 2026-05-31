@@ -10,13 +10,13 @@ class RedactorTest extends TestCase
 {
     private function makeRedactor(array $options = [])
     {
-        $config = new Config('app', 'test', null, $options);
+        $config = new Config(null, $options);
         return new Redactor($config);
     }
 
     private function makeRedactorWithSecret(array $options = [])
     {
-        $config = new Config('app', 'test', 'test-secret', $options);
+        $config = new Config('test-secret', $options);
         return new Redactor($config);
     }
 
@@ -122,10 +122,10 @@ class RedactorTest extends TestCase
         // 3ノードで打ち切り
         $data = ['a' => 1, 'b' => 2, 'c' => 3, 'd' => 4];
         $result = $r->shape($data);
-        // 3ノード消費後は '...' になるため d は '...' か存在しないはず
         $this->assertArrayHasKey('a', $result);
-        // 4番目のキーが '...' であることを確認
-        $this->assertSame('...', $result['d']);
+        $this->assertSame('...', $result['c']);
+        $this->assertArrayNotHasKey('d', $result);
+        $this->assertSame('maxShapeNodes', $r->lastTruncation());
     }
 
     // -------------------------------------------------------------------------
@@ -168,6 +168,7 @@ class RedactorTest extends TestCase
         $this->assertMatchesRegularExpression('/^\{p-[0-9a-f]{12}\}$/', $tokens['a']);
         $this->assertMatchesRegularExpression('/^\{p-[0-9a-f]{12}\}$/', $tokens['b']);
         $this->assertSame('...', $tokens['c']);
+        $this->assertSame('maxShapeNodes', $r->lastTruncation());
     }
 
     // -------------------------------------------------------------------------
@@ -176,7 +177,7 @@ class RedactorTest extends TestCase
 
     public function testBuildValuesKeepsKeepKeys()
     {
-        $config = new Config('app', 'test', null, ['keepKeys' => ['amount', 'status']]);
+        $config = new Config(null, ['keepKeys' => ['amount', 'status']]);
         $r      = new Redactor($config);
         $result = $r->buildValues(['amount' => 1000, 'status' => 'active', 'password' => 'secret']);
         $this->assertSame(['amount' => 1000, 'status' => 'active'], $result);
@@ -185,9 +186,21 @@ class RedactorTest extends TestCase
     public function testBuildValuesKeepsWhitelistedKeyEvenIfSensitiveName()
     {
         // denyKeys 廃止後: 白リストに明示したキーは名前に関わらず保持される（順序ルールなし）
-        $config = new Config('app', 'test', null, ['keepKeys' => ['secret']]);
+        $config = new Config(null, ['keepKeys' => ['secret']]);
         $r      = new Redactor($config);
         $result = $r->buildValues(['secret' => 'val']);
         $this->assertSame(['secret' => 'val'], $result);
+    }
+
+    public function testBuildHeadersKeepsOnlyWhitelistedHeaders()
+    {
+        $config = new Config('secret', ['keepHeaderKeys' => ['X-Request-Id']]);
+        $r      = new Redactor($config);
+        $result = $r->buildHeaders([
+            'Authorization' => 'Bearer token',
+            'X-Request-Id' => 'req-1',
+        ]);
+
+        $this->assertSame(['X-Request-Id' => 'req-1'], $result);
     }
 }
