@@ -24,7 +24,12 @@ jobs:
           extensions: openssl
           coverage: none
 
-      - name: Lint sources
+      - name: Lint observer-php sources
+        working-directory: observer-php
+        run: find src -name '*.php' -print0 | xargs -0 -n1 php -l
+
+      - name: Lint tekagami-data sources
+        working-directory: tools/tekagami-data
         run: |
           find src -name '*.php' -print0 | xargs -0 -n1 php -l
           php -l bin/tekagami
@@ -51,10 +56,13 @@ jobs:
           coverage: none
 
       - name: Validate composer.json
+        working-directory: observer-php
         run: composer validate --strict
 
       - name: Install dependencies
+        working-directory: observer-php
         run: composer install --prefer-dist --no-progress
 
       - name: Run test suite
+        working-directory: observer-php
         run: ./vendor/bin/phpunit
