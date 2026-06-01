@@ -38,10 +38,11 @@
 実値の出力は**デフォルトで一切なし**（`*_shape` のみ）。**明示した白リスト**に載せたキー／列だけが実値として残る:
 
 - `keepKeys`（完全一致・大小無視、デフォルト空）→ HTTP の `*_values` に実値を残す。
-- `keepHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP ヘッダの shape/token を残す。空ならヘッダの存在情報も残さない。
+- `keepHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP リクエストヘッダの shape/token を残す。空ならリクエストヘッダの存在情報も残さない。
+- `keepResponseHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP レスポンスヘッダの shape/token を残す。空ならレスポンスヘッダの存在情報も残さない。
 - `sqlValueAllowlist`（`テーブル名.列名` または `列名`、大小無視、デフォルト空）→ SQL の `observed_values` に実値を残す。
 
-旧 `deny_keys`（黒リスト）は**廃止**。実値は明示オプトインのみなので「黒が白に勝つ」という順序ルールは存在しない。`secret` 設定時の `*_tokens` は全キーに出る（不可逆 HMAC のため平文漏洩なし）。
+旧 `deny_keys`（黒リスト）は**廃止**。実値は明示オプトインのみなので「黒が白に勝つ」という順序ルールは存在しない。`secret` 設定時の `*_tokens` は query / request body では全キーに出る。HTTP ヘッダの token は request / response ともヘッダ allowlist に一致したものだけ出る。
 
 > **設定キー名について**: ここでは PHP の `Config` プロパティ名（`keepKeys` / `captureText` など camelCase）で表記する。これらは実際の API 名（root `README.md` と一致）。
 
@@ -82,9 +83,11 @@
 - `"html"` → `views[]` にテンプレート名と変数の shape が入る。HTML 本文は取らない（大きくなるため）
 - `"other"` / `null` → どちらも記録しない
 
-### リクエストヘッダ
+### HTTP ヘッダ
 
-`request_headers_shape` / `request_headers_tokens` は `keepHeaderKeys` に一致したヘッダだけを記録する。デフォルトは空なので、ヘッダの存在情報も残らない。`Authorization`, `Cookie`, `X-Api-Key` などは shape だけでも機微になりうるため、必要なヘッダ名だけを明示する。
+`request_headers_shape` / `request_headers_tokens` は `keepHeaderKeys` に一致したリクエストヘッダだけを記録する。`response_headers_shape` / `response_headers_tokens` は `keepResponseHeaderKeys` に一致したレスポンスヘッダだけを記録する。どちらもデフォルトは空なので、ヘッダの存在情報も残らない。
+
+ヘッダの実値保存フィールドはない。`secret` 設定時だけ HMAC token が出る。`Authorization`, `Cookie`, `Set-Cookie`, `Location`, `X-Api-Key` などは shape だけでも機微になりうるため、必要なヘッダ名だけを明示する。`X-Tekagami-Flow` も `keepHeaderKeys` に入れれば request header として token 化できるが、`flow.flow_id` は開発・QA が明示した非機密の調査IDとして生値で記録される。
 
 ---
 
@@ -96,7 +99,7 @@
 
 SQL ステートメント 1 件。
 
-- `statement_normalized` — リテラルを `{parameter}` に置換した正規化 SQL。同一パターンのグルーピング基準。
+- `statement_normalized` — リテラルを `{parameter}` に置換した正規化 SQL。同一パターンのグルーピング基準。DB 生成時刻は `{db_time}` に置換する。
 - `statement_hash` — `sha256:<hex>` (`statement_normalized` のハッシュ)。層A。正規化 SQL 文字列の厳密同一性を表し、`effects[].statement_hash` と対応。
 - `statement_fingerprint` — 層B。操作種別、対象テーブル、絞り込み列、書込列から作る意味レベルのフィンガープリント。現在の `tekagami-v1` では必須。
   - `fp_hash` — `fp1:<hex>`。CI3 の生SQLと Laravel/Eloquent のSQLのように文字列が変わる移行でも、意味レベルの比較材料にする。
@@ -105,13 +108,16 @@ SQL ステートメント 1 件。
 - `observed_values` — `sqlValueAllowlist` にマッチした列の実値。`{ "ORDERS.STATUS": { redacted: false, values: ["shipped"] } }` のような形式。実行された SQL に値が埋め込まれている場合（INSERT/UPDATE SET/WHERE）に正規表現ベースの best-effort で抽出する。関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがある。現状は実値（`redacted: false`）のみ。トークン化版（`redacted: true`）は将来拡張。
 - `analysis.analyzer` — 解析方式。現状は `regex`。
 - `analysis.dialect` — 解析に使った SQL 方言（`oracle` / `sqlite`）。`Collector` に注入したアナライザに対応する。
-- `analysis.warnings` — 信頼度が下がる原因を列挙。`query_history_capture_has_no_bind_values`（CI3 の query_history 経由では bind 分離ができない）など。
+- `analysis.input_quality` — SQL 採取品質。`bound_sql` はプレースホルダ付き SQL + binds、`expanded_sql` は last_query / query_history などの bind 展開済み SQL。
+- `analysis.warnings` — 信頼度が下がる原因を列挙。`expanded_sql_may_fragment_statement_hash`、`query_history_capture_has_no_bind_values`、`last_query_capture_has_no_bind_values`、`db_time_normalized`、`oracle_dual_select` など。
+
+SQL 採取は `Collector::addSql($sql, $binds, ['source' => '...'])` を高信頼入力として推奨する。bind 分離済みの SQL しか取れない場合は `Collector::addExpandedSql($sql, ['source' => 'ci3-last_query'])` を使い、低信頼入力であることをログに残す。
 
 層Aは「SQL文字列パターンが同じか」を見る署名で、層Bは「操作対象と列集合が同じか」を見る署名です。移行調査では、層Aの差分はノイズになりやすいため、`bin/tekagami export` が出す層B込みのコンパクトJSONを legacy / target で2回作り、AIや人が差分説明を読む運用を想定します。
 
 ### type: "custom"
 
-アプリ／アダプタが手動で埋め込む任意操作。`label` でイベント種別を識別する。
+アプリ／アダプタが手動で埋め込む任意操作。`label` でイベント種別を識別する。`data_shape` は pattern signature に入らないため、移行比較で業務分岐を区別したい場合は安定した `label` に分岐理由を含める。
 
 ---
 
@@ -137,15 +143,15 @@ SQL ステートメント 1 件。
 
 AI 送付用には、生の JSONL ではなく `bin/tekagami export <jsonl...>` の出力を使う。SQL全文は `sql_dictionary` に辞書化され、各実行パターンは短い SQL ID と `fp_hash` を参照するため、通常の `report.md` よりトークンを抑えられる。
 
-旧系/新系の移行評価では、legacy / target を別々に `export` し、必要に応じて両プロジェクトのコード、DDL、fixture と一緒に AI や人間へ渡す。v1 では新旧自動比較コマンドは提供しない。
+旧系/新系の移行評価では、legacy / target を別々に `export` し、`bin/tekagami diff <legacy-export.json> <target-export.json>` で決定論的な差分を出す。必要に応じて両プロジェクトのコード、DDL、fixture と一緒に AI や人間へ渡す。
 
 ---
 
-## 将来の拡張予定（未実装）
+## v1 で専用 type がないもの
 
-実装が決まった時点で追加する。`timeline` 系はスキーマの `oneOf` に未収録。
+次の専用 timeline type はスキーマの `oneOf` に未収録。必要な場合は `addCustom()` で手動記録する。
 
-- `type: "external_http"` — 外部 WebAPI 呼び出し（`url_pattern` など）。決済・配送など副作用を持つ呼び出しの移行調査で重要。
+- `type: "external_http"` — 外部 WebAPI 呼び出し
 - `type: "file"` — ファイルパスの読み書き
 - `type: "session"` — セッションへの書き込み
 - `observed_values` のトークン化版（`redacted: true`）

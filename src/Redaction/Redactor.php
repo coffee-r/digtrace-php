@@ -44,6 +44,17 @@ class Redactor
     }
 
     /**
+     * キーが keepResponseHeaderKeys に完全一致するかを判定する（大小無視）。
+     *
+     * @param string $key
+     * @return bool
+     */
+    public function isResponseHeaderKept($key)
+    {
+        return $this->matchesKey($key, $this->config->keepResponseHeaderKeys);
+    }
+
+    /**
      * @param string $key
      * @param array  $keys
      * @return bool
@@ -261,7 +272,9 @@ class Redactor
     }
 
     /**
-     * 配列から keepKeys（白リスト）に一致するキーの実値だけを抽出する（フラット）。
+     * 配列から keepKeys（白リスト）に一致するキーの実値だけを再帰的に抽出する。
+     *
+     * ネストした配列も走査する。同名キーが複数の深さに存在する場合は浅い方が優先。
      *
      * @param array $data
      * @return array
@@ -269,12 +282,24 @@ class Redactor
     public function buildValues(array $data)
     {
         $result = [];
+        $this->collectValues($data, $result);
+        return $result;
+    }
+
+    /**
+     * @param array $data
+     * @param array &$result
+     */
+    private function collectValues(array $data, array &$result)
+    {
         foreach ($data as $key => $value) {
-            if ($this->isKept($key)) {
+            if ($this->isKept($key) && !array_key_exists($key, $result)) {
                 $result[$key] = $value;
             }
+            if (is_array($value)) {
+                $this->collectValues($value, $result);
+            }
         }
-        return $result;
     }
 
     /**
@@ -288,6 +313,23 @@ class Redactor
         $result = [];
         foreach ($headers as $key => $value) {
             if ($this->isHeaderKept($key)) {
+                $result[$key] = $value;
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * 配列から keepResponseHeaderKeys に一致するレスポンスヘッダだけを抽出する。
+     *
+     * @param array $headers
+     * @return array
+     */
+    public function buildResponseHeaders(array $headers)
+    {
+        $result = [];
+        foreach ($headers as $key => $value) {
+            if ($this->isResponseHeaderKept($key)) {
                 $result[$key] = $value;
             }
         }

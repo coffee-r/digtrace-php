@@ -262,9 +262,7 @@ class Aggregator
             $type = isset($event['type']) ? $event['type'] : '';
             if ($type === 'sql') {
                 $op     = isset($event['operation']) ? $event['operation'] : 'UNKNOWN';
-                $tables = isset($event['tables']) && is_array($event['tables']) && count($event['tables']) > 0
-                    ? implode('+', $event['tables'])
-                    : 'NO_TABLE';
+                $tables = $this->tableLabel($event);
                 $hash   = isset($event['statement_hash']) ? $event['statement_hash'] : '';
                 $parts[] = $op . ':' . $tables . ':' . $hash;
             } elseif ($type === 'custom') {
@@ -330,6 +328,7 @@ class Aggregator
                 'step'                 => $step,
                 'operation'            => isset($event['operation']) ? $event['operation'] : 'UNKNOWN',
                 'tables'               => isset($event['tables']) && is_array($event['tables']) ? $event['tables'] : [],
+                'table_label'          => $this->tableLabel($event),
                 'statement_hash'       => isset($event['statement_hash']) ? $event['statement_hash'] : '',
                 'statement_fingerprint' => isset($event['statement_fingerprint']) && is_array($event['statement_fingerprint'])
                     ? $event['statement_fingerprint']
@@ -359,5 +358,34 @@ class Aggregator
         return array_filter($errors, function ($e) {
             return is_array($e) && !empty($e);
         });
+    }
+
+    /**
+     * @param array $event
+     * @return string
+     */
+    private function tableLabel(array $event)
+    {
+        if (isset($event['tables']) && is_array($event['tables']) && count($event['tables']) > 0) {
+            return implode('+', $event['tables']);
+        }
+
+        $analysis = isset($event['analysis']) && is_array($event['analysis']) ? $event['analysis'] : [];
+        $warnings = isset($analysis['warnings']) && is_array($analysis['warnings']) ? $analysis['warnings'] : [];
+        if (in_array('oracle_dual_select', $warnings, true)) {
+            return 'NO_BUSINESS_TABLE';
+        }
+
+        $op = isset($event['operation']) ? $event['operation'] : 'UNKNOWN';
+        if ($op === 'UNKNOWN' || in_array('stored_procedure_tables_not_detectable', $warnings, true)) {
+            return 'UNKNOWN_TABLE';
+        }
+
+        $sql = isset($event['statement_normalized']) ? (string)$event['statement_normalized'] : '';
+        if ($sql !== '' && !preg_match('/\\b(?:FROM|JOIN|INTO|UPDATE)\\b/i', $sql)) {
+            return 'NO_BUSINESS_TABLE';
+        }
+
+        return 'UNKNOWN_TABLE';
     }
 }

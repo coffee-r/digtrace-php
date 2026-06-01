@@ -82,6 +82,9 @@ class Collector implements CollectorInterface
 
     public function start(HttpInput $http, $flow = null)
     {
+        if (!$this->config->enabled) {
+            return;
+        }
         $this->traceId           = $this->generateUuid();
         $this->startedAt         = date('c');
         $this->http              = $http;
@@ -97,8 +100,28 @@ class Collector implements CollectorInterface
         return $this->traceId;
     }
 
-    public function addSql($statement, array $binds = [], $source = 'unknown')
+    public function addSql($sql, array $binds = [], array $options = [])
     {
+        $this->addSqlEvent($sql, $binds, $options, 'bound_sql');
+    }
+
+    public function addExpandedSql($sql, array $options = [])
+    {
+        $this->addSqlEvent($sql, [], $options, 'expanded_sql');
+    }
+
+    /**
+     * @param string $statement
+     * @param array  $binds
+     * @param array  $options
+     * @param string $inputQuality
+     * @return void
+     */
+    private function addSqlEvent($statement, array $binds, array $options, $inputQuality)
+    {
+        if (!$this->config->enabled) {
+            return;
+        }
         if ($this->traceId === null) {
             return;
         }
@@ -108,11 +131,13 @@ class Collector implements CollectorInterface
 
         try {
             $this->seq++;
+            $source = isset($options['source']) ? (string)$options['source'] : 'unknown';
             $normalized = $this->sqlAnalyzer->normalize($statement);
             $hash       = $this->sqlAnalyzer->hash($normalized);
             $operation  = $this->sqlAnalyzer->extractOperation($statement);
             $tables     = $this->sqlAnalyzer->extractTables($statement);
             $analysis   = $this->sqlAnalyzer->buildAnalysis($statement, $operation, $tables, $source);
+            $analysis   = $this->withInputQuality($analysis, $inputQuality, $source);
             $fingerprint = $this->buildSqlFingerprint($statement, $operation, $tables, $analysis);
 
             // sqlValueAllowlist にマッチした列の実値を抽出する。
@@ -128,10 +153,13 @@ class Collector implements CollectorInterface
                 'statement_normalized' => $normalized,
                 'statement_hash'       => $hash,
                 'statement_fingerprint' => $fingerprint,
-                'bind_shape'           => $this->safeShape($binds, 'bind_shape'),
                 'observed_values'      => empty($observed) ? new \stdClass() : $observed,
                 'analysis'             => $analysis,
             ];
+
+            if ($inputQuality === 'bound_sql') {
+                $event['bind_shape'] = $this->safeShape($binds, 'bind_shape');
+            }
 
             if ($this->config->secret !== null) {
                 $redactor = $this->redactor;
@@ -141,7 +169,7 @@ class Collector implements CollectorInterface
                         return $redactor->tokenize($matched);
                     }
                 );
-                if (!empty($binds)) {
+                if ($inputQuality === 'bound_sql' && !empty($binds)) {
                     $event['bind_tokens'] = $this->safeTokens($binds, 'bind_tokens');
                 }
             }
@@ -154,6 +182,36 @@ class Collector implements CollectorInterface
         } catch (\Throwable $e) {
             $this->addCaptureFailure('sql capture failed: ' . get_class($e), 'Collector::addSql');
         }
+    }
+
+    /**
+     * @param array  $analysis
+     * @param string $inputQuality
+     * @param string $source
+     * @return array
+     */
+    private function withInputQuality(array $analysis, $inputQuality, $source)
+    {
+        $analysis['input_quality'] = $inputQuality;
+
+        if (!isset($analysis['warnings']) || !is_array($analysis['warnings'])) {
+            $analysis['warnings'] = [];
+        }
+
+        if ($inputQuality === 'expanded_sql') {
+            $analysis['warnings'][] = 'expanded_sql_may_fragment_statement_hash';
+
+            $sourceLower = strtolower($source);
+            if (strpos($sourceLower, 'query_history') !== false) {
+                $analysis['warnings'][] = 'query_history_capture_has_no_bind_values';
+            } elseif (strpos($sourceLower, 'last_query') !== false) {
+                $analysis['warnings'][] = 'last_query_capture_has_no_bind_values';
+            }
+        }
+
+        $analysis['warnings'] = array_values(array_unique($analysis['warnings']));
+
+        return $analysis;
     }
 
     /**
@@ -192,6 +250,9 @@ class Collector implements CollectorInterface
 
     public function addCustom($label, $data = null)
     {
+        if (!$this->config->enabled) {
+            return;
+        }
         if ($this->traceId === null) {
             return;
         }
@@ -216,6 +277,9 @@ class Collector implements CollectorInterface
 
     public function addError($type, $message = null, $at = null)
     {
+        if (!$this->config->enabled) {
+            return;
+        }
         if ($this->traceId === null) {
             return;
         }
@@ -240,6 +304,9 @@ class Collector implements CollectorInterface
 
     public function finish(HttpResponse $response)
     {
+        if (!$this->config->enabled) {
+            return;
+        }
         if ($this->traceId === null) {
             return;
         }
@@ -409,6 +476,17 @@ class Collector implements CollectorInterface
                 $env['request_headers_shape'] = $this->safeShape($headers, 'request_headers_shape');
                 if ($this->config->secret !== null) {
                     $env['request_headers_tokens'] = $this->safeTokens($headers, 'request_headers_tokens');
+                }
+            }
+        }
+
+        // レスポンスヘッダ
+        if ($response->responseHeadersRaw !== null) {
+            $headers = $this->redactor->buildResponseHeaders($response->responseHeadersRaw);
+            if (!empty($headers)) {
+                $env['response_headers_shape'] = $this->safeShape($headers, 'response_headers_shape');
+                if ($this->config->secret !== null) {
+                    $env['response_headers_tokens'] = $this->safeTokens($headers, 'response_headers_tokens');
                 }
             }
         }

@@ -108,4 +108,18 @@ class CompactExporterTest extends TestCase
         $this->assertSame('SELECT', $step['op']);
         $this->assertSame(['PRODUCTS'], $step['tables']);
     }
+
+    public function testSqlDictionaryKeepsDbTimePlaceholder()
+    {
+        $report = $this->report();
+        $report['observed_entrypoints'][0]['patterns'][0]['sql_flow'][0]['statement_normalized']
+            = 'INSERT INTO logs (created_at) VALUES ({db_time})';
+        $report['observed_entrypoints'][0]['patterns'][0]['sql_flow'][0]['statement_hash'] = 'sha256:dbtime';
+        $report['observed_entrypoints'][0]['patterns'][0]['compressed_flow_signature']
+            = 'INSERT:LOGS:sha256:dbtime -> STATUS:200';
+
+        $export = (new CompactExporter())->export($report);
+
+        $this->assertContains('INSERT INTO logs (created_at) VALUES ({db_time})', $export['sql_dictionary']);
+    }
 }

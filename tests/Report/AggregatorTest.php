@@ -155,6 +155,46 @@ class AggregatorTest extends TestCase
         $this->assertSame('CUSTOM:cache_read x2 -> STATUS:200', $agg->compressedPatternSignature($trace));
     }
 
+    public function testDualSelectUsesNoBusinessTableLabel()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace(['timeline' => [
+            $this->makeSqlEvent([
+                'tables' => [],
+                'statement_normalized' => 'SELECT shop_orders_seq.NEXTVAL AS id FROM dual',
+                'analysis' => ['warnings' => ['oracle_dual_select']],
+            ]),
+        ]]);
+
+        $this->assertSame(
+            'SELECT:NO_BUSINESS_TABLE:sha256:abc123 -> STATUS:200',
+            $agg->patternSignature($trace)
+        );
+
+        $report = $agg->aggregate([$trace]);
+        $this->assertSame(
+            'NO_BUSINESS_TABLE',
+            $report['observed_entrypoints'][0]['patterns'][0]['sql_flow'][0]['table_label']
+        );
+    }
+
+    public function testUnresolvedTableUsesUnknownTableLabel()
+    {
+        $agg = new Aggregator();
+        $trace = $this->makeTrace(['timeline' => [
+            $this->makeSqlEvent([
+                'tables' => [],
+                'statement_normalized' => 'SELECT * FROM mysterious_source',
+                'analysis' => ['warnings' => ['tables_not_detected']],
+            ]),
+        ]]);
+
+        $this->assertSame(
+            'SELECT:UNKNOWN_TABLE:sha256:abc123 -> STATUS:200',
+            $agg->patternSignature($trace)
+        );
+    }
+
     public function testPatternSignaturesIncludeTruncation()
     {
         $agg = new Aggregator();

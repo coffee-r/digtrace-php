@@ -24,6 +24,12 @@ class Config
     public $keepHeaderKeys = [];
 
     /**
+     * @var array  記録する HTTP レスポンスヘッダ名の白リスト（完全一致・大小無視）。
+     *             デフォルトは空＝レスポンスヘッダの存在情報も記録しない。
+     */
+    public $keepResponseHeaderKeys = [];
+
+    /**
      * @var array  SQL の列値を残す白リスト。
      *             フォーマット: 'table.column' または 'column'。デフォルトは空。
      *             ここに明示した列だけが observed_values に実値として記録される。
@@ -56,6 +62,12 @@ class Config
     public $maxTimelineSize = 500;
 
     /**
+     * @var bool  false で Collector の全メソッドを即時スキップ（shape 生成・HMAC 等も行わない）。
+     *            NullSink より低コストな無効化手段。デフォルト true。
+     */
+    public $enabled = true;
+
+    /**
      * @param string|null $secret
      * @param array       $options  上記パブリックプロパティへの上書きマップ
      */
@@ -64,9 +76,10 @@ class Config
         $this->secret = $secret;
 
         $known = [
-            'keepKeys', 'keepHeaderKeys', 'sqlValueAllowlist',
+            'keepKeys', 'keepHeaderKeys', 'keepResponseHeaderKeys', 'sqlValueAllowlist',
             'captureText', 'captureEffects',
             'tokenHmacLength', 'maxDepth', 'maxShapeNodes', 'maxTimelineSize',
+            'enabled',
         ];
         foreach ($options as $key => $value) {
             if (in_array($key, $known, true)) {

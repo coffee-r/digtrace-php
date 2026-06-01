@@ -10,7 +10,7 @@
 - フレームワーク非依存・PHP 7.0 以上・Composer 配布
 - APM ではない（速度・レイテンシは測らない）
 - デフォルトで全値を shape（型構造）に変換（実値は出さない）。実値は白リスト（`keepKeys` / `sqlValueAllowlist`）で明示したものだけ残す
-- HTTP ヘッダは存在情報も含めて白リスト（`keepHeaderKeys`）で明示したものだけ残す
+- HTTP ヘッダは存在情報も含めて白リスト（request: `keepHeaderKeys` / response: `keepResponseHeaderKeys`）で明示したものだけ残す
 - HMAC 方式のトークン化で「同一値の追跡」を実値なしで可能に
 - 書き込み失敗はアプリに伝播しない
 
@@ -22,13 +22,30 @@ flowchart LR
     B --> C["JSONL\n1 request = 1 line"]
     C --> D["report\nentrypoint x pattern"]
     C --> E["export\ncompact JSON for AI"]
-    D --> F["人間が観測範囲と副作用を確認"]
-    E --> G["AIに legacy / target の差分説明を依頼"]
+    E --> F["diff\nlegacy vs target"]
+    D --> G["人間が観測範囲と副作用を確認"]
+    F --> H["AIに観測差分の意味づけを依頼"]
 ```
 
-JSONL には HTTP 入出力の shape、SQL の時系列、custom イベント、errors、effects が入ります。`report` はエントリポイントと実行パターンを人間向けに集計し、`export` はSQL全文を辞書化して AI に渡しやすい小さな JSON にします。
+JSONL には HTTP 入出力の shape、SQL の時系列、custom イベント、errors、effects が入ります。`report` はエントリポイントと実行パターンを人間向けに集計し、`export` はSQL全文を辞書化して AI に渡しやすい小さな JSON にします。`diff` は legacy / target の export を比較して決定論的な差分を出します。
 
-`app_name` / `env` は JSONL には入れません。`legacy-shop.production.jsonl` や `ci3-demo-shop.local-e2e.jsonl` のようにファイル名・保存パスで管理します。
+- [業務発見プロンプト（CI3 shop）](examples/ci3-shop/ai/PROMPT.md)
+- [移植差分分析プロンプト（CI3→Laravel12）](examples/laravel12-shop/ai/DIFF_PROMPT.md)
+
+## ソースコード解析・RAGとの関係
+
+tekagami は、ソースコードやテーブル定義を AI / RAG に読ませる分析の代替ではなく、そこに **実行時に観測された証拠データ** を足すためのライブラリです。
+
+ソースコードと DDL からは「実装されている可能性がある処理」や「データ構造」は分かります。一方で、それだけでは、その処理が実際にどの入口から到達されているか、どの分岐が通っているか、SQL がどの順番で発行されるか、実際のリクエスト/レスポンス shape がどうなっているかは判断しづらいことがあります。
+
+tekagami の JSONL / report / export を一緒に渡すと、AI や人間は次のように、推測と観測事実を分けて読めます。
+
+- コード上の処理候補に対して、実際に観測された HTTP 入口・ステータス・SQL 時系列を照合できる
+- テーブル定義だけでは分からない、実データ上の型ゆれ・欠損・レスポンス shape を確認できる
+- レガシーと移行先で、SQL 文字列が違っても layer-B fingerprint による意味近似一致候補を見られる
+- 観測されていないケースを「存在しない仕様」と断定せず、観測範囲の限界として扱える
+
+つまり、RAG に渡す材料を「コードとDDL」だけでなく「実際に起きたリクエスト単位の事実」まで広げることで、仕様洗い出しや移行差分分析の裏取りをしやすくします。
 
 ## インストール
 
@@ -70,8 +87,11 @@ $collector->start($http);
 // 開発・QA の調査で明示的な相関が必要な場合だけ Flow を渡します。
 // $collector->start($http, new Flow('qa-order-cod-001', 1));
 
-// SQL
-$collector->addSql($db->last_query(), [], 'query_history');
+// SQL（推奨: bind 前 SQL + binds）
+$collector->addSql($sql, $binds, ['source' => 'db-wrapper']);
+
+// last_query() など展開済み SQL しか取れない場合は低信頼 API を使います。
+$collector->addExpandedSql($db->last_query(), ['source' => 'ci3-last_query']);
 
 // カスタム（キャッシュ・外部 API など）
 $collector->addCustom('cache_read', ['key' => $cacheKey, 'hit' => $hit]);
@@ -80,6 +100,7 @@ $collector->addCustom('cache_read', ['key' => $cacheKey, 'hit' => $hit]);
 $response               = new HttpResponse();
 $response->status       = http_response_code();
 $response->responseKind = 'json';
+$response->responseHeadersRaw = $yourResponse->headers(); // 任意。keepResponseHeaderKeys に一致したものだけ記録
 $response->responseBodyRaw = $responseData;
 
 // Controllerの基底クラスのDestructorやテンプレートファイルに変数を渡す直前などに差し込みます。
@@ -96,9 +117,11 @@ $collector->finish($response);
 | オプション | 型 | デフォルト | 説明 |
 |---|---|---|---|
 | `secret` *(第1引数)* | string\|null | null | HMAC-SHA256 の共有シークレット。設定時に `*_tokens` フィールドを記録。null = トークン化なし |
-| `keepKeys` | array | `[]` | 実値を残すキー名の白リスト（query/body、完全一致・大小無視）。空 = 実値を一切残さない |
-| `keepHeaderKeys` | array | `[]` | 記録するHTTPヘッダ名の白リスト（完全一致・大小無視）。空 = ヘッダの存在情報も記録しない |
+| `keepKeys` | array | `[]` | 実値を残すキー名の白リスト（query/body、完全一致・大小無視）。ネストした配列も再帰的にスキャンし、同名キーが複数の深さにある場合は浅い方が優先。空 = 実値を一切残さない |
+| `keepHeaderKeys` | array | `[]` | 記録するHTTPリクエストヘッダ名の白リスト（完全一致・大小無視）。空 = リクエストヘッダの存在情報も記録しない |
+| `keepResponseHeaderKeys` | array | `[]` | 記録するHTTPレスポンスヘッダ名の白リスト（完全一致・大小無視）。空 = レスポンスヘッダの存在情報も記録しない |
 | `sqlValueAllowlist` | array | `[]` | SQL の実値を残す列名の白リスト（`'table.column'` または `'column'`） |
+| `enabled` | bool | true | false で全メソッドを即時スキップ（shape 生成・HMAC 等も行わない）。`NullSink` より低コストな無効化手段 |
 | `captureText` | bool | false | 生 SQL テキストを `statement_text` に保存（**平文**・開発用。本番非推奨） |
 | `captureEffects` | bool | true | INSERT/UPDATE/DELETE の集計を `effects[]` に出力 |
 | `tokenHmacLength` | int | 12 | `*_tokens` フィールドの HMAC-SHA256 hex 桁数 |
@@ -106,9 +129,22 @@ $collector->finish($response);
 | `maxShapeNodes` | int | 10000 | shape 生成のノード訪問数上限（メモリ対策） |
 | `maxTimelineSize` | int\|null | 500 | timeline イベント数上限。超過で以降を無視し `errors[]` に記録（null = 無制限） |
 
-`sqlValueAllowlist` は実行済み SQL 文字列から正規表現ベースで値を拾う best-effort 機能です。単純な `INSERT ... VALUES (...)`、`UPDATE ... SET ...`、`WHERE col = value` などを対象にしており、関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがあります。抽出できない場合も観測自体は失敗扱いにせず、`statement_normalized` と shape を主な証拠として残します。
+`sqlValueAllowlist` は SQL 文字列から正規表現ベースで値を拾う best-effort 機能です。単純な `INSERT ... VALUES (...)`、`UPDATE ... SET ...`、`WHERE col = value` などを対象にしており、関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがあります。抽出できない場合も観測自体は失敗扱いにせず、`statement_normalized` と shape を主な証拠として残します。
 
 採取対象を絞る場合は、フレームワーク側の差し込み箇所や環境設定で Collector を呼ぶ範囲を制御します。このライブラリは仕様・移行調査用の証拠採取が目的で、低頻度の分岐やエッジケースを落とさないことを優先します。
+
+## SQL 採取 API
+
+SQL は入力品質で 2 つの API を使い分けます。
+
+| API | 入力 | `analysis.input_quality` | 用途 |
+|---|---|---|---|
+| `addSql($sql, $binds, ['source' => '...'])` | プレースホルダ付き SQL + binds | `bound_sql` | DB ラッパー、Laravel `DB::listen`、Doctrine middleware、PDO wrapper、CI3 `DB_driver::query()` 改造など |
+| `addExpandedSql($sql, ['source' => '...'])` | bind 展開済み SQL | `expanded_sql` | CI3 `last_query()` / query history など、bind 分離後の値が取れない場合 |
+
+`addExpandedSql()` は `expanded_sql_may_fragment_statement_hash` warning を出します。source に `last_query` / `query_history` を含めると、bind 分離不能を示す warning も追加されます。観測ゼロよりは有用ですが、移行比較では層A `statement_hash` が割れやすいため、取れる環境では `addSql()` を優先してください。
+
+custom イベントの `data_shape` は実行パターンの signature には入りません。業務分岐を比較対象にしたい場合は、`payment_method_rejected_cod` のような安定した `label` で分岐理由を表してください。
 
 ## SQL 方言の選択
 
@@ -134,7 +170,7 @@ $collector = new Collector($config, $sink, new MyPostgresSqlAnalyzer());
 
 SQL イベントには、2種類の署名が出力されます。
 
-- **層A `statement_hash`** — `statement_normalized` の `sha256:<hex>`。正規化SQL文字列の厳密同一性を見るための署名です。同じ実装・同じSQLパターンをまとめる用途に向いています。
+- **層A `statement_hash`** — `statement_normalized` の `sha256:<hex>`。正規化SQL文字列の厳密同一性を見るための署名です。同じ実装・同じSQLパターンをまとめる用途に向いています。`NULL` 値と DB 生成時刻（`SYSTIMESTAMP` / `CURRENT_TIMESTAMP` / `CURRENT_DATE` / `SYSDATE` / `NOW()`）は比較ノイズを減らすため正規化されます。
 - **層B `statement_fingerprint.fp_hash`** — 操作種別、対象テーブル、絞り込み列、書込列から作る `fp1:<hex>`。CI3 の生SQLと Laravel/Eloquent のSQLのように文字列が変わっても、意味レベルの比較材料として使います。
 
 `statement_fingerprint` は現在の `tekagami-v1` では必須です。旧形式の JSONL（このフィールドがないもの）は新スキーマの検証対象外です。
@@ -150,9 +186,13 @@ php bin/tekagami report --format json jan.jsonl feb.jsonl > report.json
 php bin/tekagami export trace.jsonl > trace.export.json
 php bin/tekagami export trace.jsonl --format md > trace.export.md
 
-# 移行評価では旧系/新系をそれぞれ export して、2ファイルを AI に渡す
+# 移行評価では旧系/新系をそれぞれ export して比較する
 php bin/tekagami export legacy.jsonl > legacy.export.json
 php bin/tekagami export target.jsonl > target.export.json
+
+# 2つの export を比較（JSON 形式または Markdown 形式）
+php bin/tekagami diff legacy.export.json target.export.json
+php bin/tekagami diff legacy.export.json target.export.json --format md
 
 # SQL 値の表示モードを指定（デフォルト: normalized / tokenized も選択可）
 php bin/tekagami report --value-mode tokenized trace.jsonl
@@ -164,11 +204,13 @@ php bin/tekagami report server1.jsonl server2.jsonl server3.jsonl
 
 レポートは HTTP エントリポイントと実行パターンを決定論的にまとめる証拠ビューです。業務ルールの命名や推論は行わず、必要な判断材料は `keepKeys` / `sqlValueAllowlist` / `addCustom()` で観測事実として残します。
 
+`diff` は 2 つの export.json を比較して決定論的な差分を出します。エントリポイントの追加/消失、実行パターンの変化、status_codes の差異、effects の変化、custom event の差、layer-B fp が一致するが SQL 文字列が異なる「意味近似一致候補（meaning_near_matches）」を検出します。
+
 `report` は完全な時系列シグネチャ（`observed_flow_signature`）に加えて、連続する同一 SQL / custom イベントを `xN` でまとめた圧縮シグネチャ（`compressed_flow_signature`）も出力します。N+1 のように同じ SQL が件数分だけ繰り返されるケースを、件数差を残しながら読みやすくするためです。timeline が `maxTimelineSize` で打ち切られたトレースは、シグネチャ末尾に `TRUNCATED:<limit>` が付き、pattern に `truncated` / `truncation_limit` が出ます。
 
 `export` は AI 送付用にトークン数を抑えた成果物を出します。SQL全文は `sql_dictionary` に一度だけ置き、各実行パターンの `sql_flow` は `S1` のような短IDと層B `fp` で参照します。JSON 出力はデフォルトで pretty print しません。
 
-旧系/新系の移行評価では、legacy / target を別々に `export` し、必要に応じて両プロジェクトのコード、DDL、fixture と一緒に AI や人間へ渡します。v1 では新旧自動比較コマンドは提供しません。層AのSQL文字列差分はフレームワーク移行で大きく変わりやすく、ログだけの機械比較では許容差かバグかを判断しづらいためです。
+旧系/新系の移行評価では、legacy / target を別々に `export` し、必要に応じて両プロジェクトのコード、DDL、fixture と一緒に `diff` の結果を AI や人間へ渡します。層AのSQL文字列差分はフレームワーク移行で大きく変わりやすいため、`diff` は layer-B fp による意味近似一致候補も出力します。
 
 ## エラー・失敗の扱い
 
@@ -182,7 +224,7 @@ php bin/tekagami report server1.jsonl server2.jsonl server3.jsonl
 
 `keepKeys` / `sqlValueAllowlist` に入れた値は平文で JSONL に保存されます。`password`、`token`、メールアドレス、電話番号、住所、郵便番号、認証・決済情報、顧客IDや注文IDなど個人や取引に強く紐づく値は原則入れないでください。相関だけが必要なら `secret` による不可逆トークンを使います。
 
-HTTP ヘッダは `keepHeaderKeys` に入れたものだけ記録します。`Authorization`、`Cookie`、`X-Api-Key` などは shape であっても存在自体が機微になりうるため、デフォルトでは記録しません。
+HTTP リクエストヘッダは `keepHeaderKeys`、HTTP レスポンスヘッダは `keepResponseHeaderKeys` に入れたものだけ記録します。ヘッダ実値の保存フィールドはなく、shape と、`secret` 設定時の HMAC token だけを出します。`Authorization`、`Cookie`、`Set-Cookie`、`Location`、`X-Api-Key` などは shape であっても存在自体が機微になりうるため、デフォルトでは記録しません。`X-Tekagami-Flow` も `keepHeaderKeys` に入れれば request header として token 化できますが、`flow.flow_id` は開発・QA が明示した非機密の調査IDとして生値で記録されます。
 
 `addError()` に生の例外メッセージを渡すと、DSN、SQL、ファイルパス、個人情報が混ざる可能性があります。本番では固定メッセージやエラー種別だけを渡してください。
 

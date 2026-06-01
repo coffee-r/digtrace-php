@@ -25,6 +25,8 @@ if (!$autoloaded) {
 
 use CoffeeR\Tekagami\Report\Aggregator;
 use CoffeeR\Tekagami\Report\CompactExporter;
+use CoffeeR\Tekagami\Report\DiffEngine;
+use CoffeeR\Tekagami\Report\DiffMarkdownRenderer;
 use CoffeeR\Tekagami\Report\JsonlReader;
 use CoffeeR\Tekagami\Report\MarkdownRenderer;
 
@@ -70,6 +72,8 @@ if ($command === 'report') {
     runReport($paths, $options);
 } elseif ($command === 'export') {
     runExport($paths, $options);
+} elseif ($command === 'diff') {
+    runDiff($paths, $options);
 } else {
     fwrite(STDERR, "Unknown command: $command\n\n");
     printHelp();
@@ -156,6 +160,50 @@ function runExport(array $paths, array $options)
     exit(0);
 }
 
+function runDiff(array $paths, array $options)
+{
+    if (count($paths) !== 2) {
+        fwrite(STDERR, "Error: diff requires exactly 2 export.json files.\n");
+        fwrite(STDERR, "Usage: php bin/tekagami diff <legacy-export.json> <target-export.json> [--format json|md]\n");
+        exit(1);
+    }
+
+    $format = isset($options['format']) ? $options['format'] : 'json';
+    if (!in_array($format, ['json', 'md', 'markdown'], true)) {
+        fwrite(STDERR, "Error: Unknown format '$format'. Use: json, md\n");
+        exit(1);
+    }
+
+    foreach ($paths as $path) {
+        if (!is_file($path)) {
+            fwrite(STDERR, "Error: File not found: $path\n");
+            exit(1);
+        }
+    }
+
+    $legacy = json_decode(file_get_contents($paths[0]), true);
+    $target = json_decode(file_get_contents($paths[1]), true);
+
+    if (!is_array($legacy)) {
+        fwrite(STDERR, "Error: Could not parse JSON from: {$paths[0]}\n");
+        exit(1);
+    }
+    if (!is_array($target)) {
+        fwrite(STDERR, "Error: Could not parse JSON from: {$paths[1]}\n");
+        exit(1);
+    }
+
+    $result = (new DiffEngine())->diff($legacy, $target);
+
+    if ($format === 'json') {
+        echo json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) . "\n";
+    } else {
+        echo (new DiffMarkdownRenderer())->render($result);
+    }
+
+    exit(0);
+}
+
 function printHelp()
 {
     echo <<<'HELP'
@@ -164,11 +212,13 @@ tekagami — tekagami-v1 report and export tool
 Usage:
   php bin/tekagami report <jsonl...> [--format md|json] [--value-mode normalized|tokenized]
   php bin/tekagami export <jsonl...> [--format json|md] [--value-mode normalized|tokenized]
+  php bin/tekagami diff   <legacy-export.json> <target-export.json> [--format json|md]
   php bin/tekagami --help
 
 Commands:
   report   Generate a Markdown or JSON summary report from JSONL tekagami files
   export   Generate a compact JSON or Markdown artifact for AI review
+  diff     Compare two export.json files and report behavioral differences
 
 Options for report:
   --format md|json          Output format (default: md)
@@ -180,11 +230,16 @@ Options for export:
   --value-mode normalized|tokenized
                             SQL value display mode (default: normalized)
 
+Options for diff:
+  --format json|md          Output format (default: json)
+
 Examples:
   php bin/tekagami report trace.jsonl
   php bin/tekagami report --format json jan.jsonl feb.jsonl > report.json
   php bin/tekagami export legacy.jsonl > legacy.export.json
   php bin/tekagami export target.jsonl > target.export.json
+  php bin/tekagami diff legacy.export.json target.export.json
+  php bin/tekagami diff legacy.export.json target.export.json --format md
 
 HELP;
 }

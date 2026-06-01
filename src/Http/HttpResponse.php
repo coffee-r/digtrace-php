@@ -25,6 +25,12 @@ class HttpResponse
     public $contentType = null;
 
     /**
+     * @var array|null  レスポンスヘッダのキー/値マップ。
+     *                  null = レスポンスヘッダを記録しない。
+     */
+    public $responseHeadersRaw = null;
+
+    /**
      * @var mixed  JSON レスポンスボディの生の値 (json_decode 済み)。
      *             Collector が shape を生成する。
      *             null = 非JSONレスポンス、または記録しない。

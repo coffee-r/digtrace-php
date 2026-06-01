@@ -87,6 +87,38 @@ class SqlAnalyzerTest extends TestCase
         );
     }
 
+    public function testNormalizeNullInValuePosition()
+    {
+        $this->assertSame(
+            'INSERT INTO orders (delivery_date, delivery_time) VALUES ({parameter}, {parameter})',
+            $this->analyzer->normalize('INSERT INTO orders (delivery_date, delivery_time) VALUES (NULL, NULL)')
+        );
+    }
+
+    public function testNormalizeIsNullPredicateIsPreserved()
+    {
+        $this->assertSame(
+            'SELECT * FROM users WHERE deleted_at IS NULL AND archived_at IS NOT NULL',
+            $this->analyzer->normalize('SELECT * FROM users WHERE deleted_at IS NULL AND archived_at IS NOT NULL')
+        );
+    }
+
+    public function testNormalizeDbTimeLiterals()
+    {
+        $this->assertSame(
+            'INSERT INTO logs (created_at, updated_at, touched_at) VALUES ({db_time}, {db_time}, {db_time})',
+            $this->analyzer->normalize('INSERT INTO logs (created_at, updated_at, touched_at) VALUES (CURRENT_TIMESTAMP, CURRENT_DATE, NOW())')
+        );
+    }
+
+    public function testNormalizeSequenceReferenceIsPreserved()
+    {
+        $this->assertSame(
+            'SELECT shop_orders_seq.NEXTVAL AS id',
+            $this->analyzer->normalize('SELECT shop_orders_seq.NEXTVAL AS id')
+        );
+    }
+
     public function testNormalizeWithLeadingComment()
     {
         $result = $this->analyzer->normalize('/* CI3 */SELECT * FROM users WHERE id = 1');
@@ -260,6 +292,12 @@ class SqlAnalyzerTest extends TestCase
     {
         $analysis = $this->analyzer->buildAnalysis('SELECT 1', 'SELECT', ['T'], 'query_history');
         $this->assertContains('query_history_capture_has_no_bind_values', $analysis['warnings']);
+    }
+
+    public function testAnalysisDbTimeWarning()
+    {
+        $analysis = $this->analyzer->buildAnalysis('SELECT CURRENT_TIMESTAMP', 'SELECT', [], 'intercepted');
+        $this->assertContains('db_time_normalized', $analysis['warnings']);
     }
 
     public function testAnalysisTablesNotDetected()

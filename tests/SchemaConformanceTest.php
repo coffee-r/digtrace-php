@@ -143,6 +143,29 @@ class SchemaConformanceTest extends TestCase
         $collector->finish($response);
         $this->assertValidRecord($sink->captured, 'html_views');
     }
+
+    public function testResponseHeadersRecordConforms()
+    {
+        $sink      = new SchemaCaptureSink();
+        $config    = new Config('shared-secret', ['keepResponseHeaderKeys' => ['X-Trace-Id']]);
+        $collector = new Collector($config, $sink, new OracleSqlAnalyzer());
+        $collector->start(new HttpInput('GET', '/headers'), new Flow());
+
+        $response = new HttpResponse();
+        $response->status = 200;
+        $response->responseKind = 'json';
+        $response->responseHeadersRaw = [
+            'Set-Cookie' => 'sid=secret; HttpOnly',
+            'X-Trace-Id' => 'trace-123',
+        ];
+        $response->responseBodyRaw = ['ok' => true];
+        $collector->finish($response);
+
+        $this->assertArrayHasKey('response_headers_shape', $sink->captured['http']);
+        $this->assertArrayHasKey('response_headers_tokens', $sink->captured['http']);
+        $this->assertArrayNotHasKey('Set-Cookie', $sink->captured['http']['response_headers_shape']);
+        $this->assertValidRecord($sink->captured, 'response_headers');
+    }
 }
 
 /**

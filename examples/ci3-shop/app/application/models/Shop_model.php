@@ -282,7 +282,7 @@ class Shop_model extends CI_Model
     {
         $CI =& get_instance();
         if (isset($CI->tekagamiCollector)) {
-            $CI->tekagamiCollector->addSql($this->interpolate($sql, $binds), $binds, 'ci3-shop');
+            $CI->tekagamiCollector->addSql($sql, $binds, array('source' => 'shop'));
         }
 
         $stmt = oci_parse($this->connection(), $sql);
@@ -326,22 +326,4 @@ class Shop_model extends CI_Model
         return $this->conn;
     }
 
-    private function interpolate($sql, array $binds)
-    {
-        foreach ($binds as $key => $value) {
-            $sql = str_replace(':' . $key, $this->literal($value), $sql);
-        }
-        return $sql;
-    }
-
-    private function literal($value)
-    {
-        if ($value === null) {
-            return 'NULL';
-        }
-        if (is_int($value) || is_float($value)) {
-            return (string) $value;
-        }
-        return "'" . str_replace("'", "''", (string) $value) . "'";
-    }
 }

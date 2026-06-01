@@ -44,6 +44,7 @@ class MY_Controller extends CI_Controller
         }
 
         $config = new Config(getenv('TEKAGAMI_SECRET') ?: null, array(
+            'enabled' => getenv('TEKAGAMI_ENABLED') !== 'false',
             'keepKeys' => array(
                 'scenario', 'product_code', 'payment_method',
                 'shipping_method', 'prefecture', 'delivery_date',
@@ -77,6 +78,7 @@ class MY_Controller extends CI_Controller
         $response->status = $status;
         $response->responseKind = 'json';
         $response->contentType = 'application/json';
+        $response->responseHeadersRaw = array('Content-Type' => 'application/json');
         $response->responseBodyRaw = $payload;
 
         $this->tekagamiCollector->finish($response);

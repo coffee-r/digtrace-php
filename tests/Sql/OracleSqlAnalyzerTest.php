@@ -61,6 +61,33 @@ class OracleSqlAnalyzerTest extends TestCase
         $this->assertSame([], $this->analyzer->extractTables('SELECT 1 FROM dual'));
     }
 
+    public function testAnalysisWarnsForDualSelect()
+    {
+        $analysis = $this->analyzer->buildAnalysis('SELECT shop_orders_seq.NEXTVAL FROM dual', 'SELECT', [], 'intercepted');
+        $this->assertContains('oracle_dual_select', $analysis['warnings']);
+    }
+
+    public function testAnalysisWarnsForRownumFilter()
+    {
+        $sql = 'select * from (select * from "SHOP_PRODUCTS" where "CODE" = ?) where rownum = ?';
+        $analysis = $this->analyzer->buildAnalysis($sql, 'SELECT', ['SHOP_PRODUCTS'], 'app');
+        $this->assertContains('oracle_rownum_bounded', $analysis['warnings']);
+    }
+
+    public function testAnalysisNoRownumWarningWhenAbsent()
+    {
+        $sql = 'SELECT * FROM shop_products WHERE code = ?';
+        $analysis = $this->analyzer->buildAnalysis($sql, 'SELECT', ['SHOP_PRODUCTS'], 'app');
+        $this->assertNotContains('oracle_rownum_bounded', $analysis['warnings']);
+    }
+
+    public function testAnalysisRownumInInlineFilter()
+    {
+        $sql = 'SELECT 1 AS found FROM shop_cart_items WHERE cart_id = ? AND ROWNUM = ?';
+        $analysis = $this->analyzer->buildAnalysis($sql, 'SELECT', ['SHOP_CART_ITEMS'], 'app');
+        $this->assertContains('oracle_rownum_bounded', $analysis['warnings']);
+    }
+
     public function testTablesWithHintComment()
     {
         $this->assertSame(['T'], $this->analyzer->extractTables('/*+ INDEX(t idx) */ SELECT * FROM t'));

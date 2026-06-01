@@ -189,9 +189,11 @@ class MarkdownRenderer
         $parts = [];
         foreach ($sqlFlow as $step) {
             $op     = isset($step['operation']) ? $step['operation'] : '?';
-            $tables = isset($step['tables']) && is_array($step['tables']) && count($step['tables']) > 0
-                ? implode('+', $step['tables'])
-                : 'NO_TABLE';
+            $tables = isset($step['table_label'])
+                ? $step['table_label']
+                : (isset($step['tables']) && is_array($step['tables']) && count($step['tables']) > 0
+                    ? implode('+', $step['tables'])
+                    : 'UNKNOWN_TABLE');
             $parts[] = $op . ' ' . $tables;
         }
         return implode(' → ', $parts);

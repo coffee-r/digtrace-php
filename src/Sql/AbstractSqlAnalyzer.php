@@ -100,22 +100,43 @@ abstract class AbstractSqlAnalyzer implements SqlAnalyzerInterface
     protected function getLiteralPattern()
     {
         return '/' . $this->getStringLiteralPattern()
+             . '|' . $this->getDbTimePattern()
              . '|\\b0x[0-9a-fA-F]+\\b'                       // 16進数リテラル
              . '|\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b'   // 数値リテラル
              . '|:[a-zA-Z_][a-zA-Z0-9_]*'                    // 名前付きバインド :name
-             . '|\\?/';                                      // 位置バインド ?
+             . '|\\?'                                        // 位置バインド ?
+             . '|\\bNULL\\b/i';                              // 値位置の NULL
+    }
+
+    /**
+     * DB が実行時に生成する時刻値にマッチする正規表現フラグメント。
+     *
+     * @return string
+     */
+    protected function getDbTimePattern()
+    {
+        return '\\b(?:SYSTIMESTAMP|SYSDATE|CURRENT_DATE|CURRENT_TIMESTAMP(?:\\s*\\(\\s*\\d+\\s*\\))?)\\b'
+             . '|\\bNOW\\s*\\(\\s*\\)';
     }
 
     public function normalize($statement)
     {
-        return preg_replace($this->getLiteralPattern(), '{parameter}', $statement);
+        list($protected, $restore) = $this->protectIsNullPredicates($statement);
+        $normalized = preg_replace_callback($this->getLiteralPattern(), function ($m) {
+            return $this->isDbTimeLiteral($m[0]) ? '{db_time}' : '{parameter}';
+        }, $protected);
+
+        return strtr($normalized, $restore);
     }
 
     public function replaceWithCallback($statement, callable $replacer)
     {
-        return preg_replace_callback($this->getLiteralPattern(), function ($m) use ($replacer) {
-            return $replacer($m[0]);
-        }, $statement);
+        list($protected, $restore) = $this->protectIsNullPredicates($statement);
+        $replaced = preg_replace_callback($this->getLiteralPattern(), function ($m) use ($replacer) {
+            return $this->isDbTimeLiteral($m[0]) ? '{db_time}' : $replacer($m[0]);
+        }, $protected);
+
+        return strtr($replaced, $restore);
     }
 
     public function hash($normalized)
@@ -181,6 +202,14 @@ abstract class AbstractSqlAnalyzer implements SqlAnalyzerInterface
             $warnings[] = 'query_history_capture_has_no_bind_values';
         }
 
+        if ($this->containsDbTimeLiteral($statement)) {
+            $warnings[] = 'db_time_normalized';
+        }
+
+        if ($this->containsDualSelect($statement)) {
+            $warnings[] = 'oracle_dual_select';
+        }
+
         // サブクエリ検出: 2つ目以降の SELECT を探す
         $hasSubquery = (bool)preg_match('/\\bSELECT\\b.+\\bSELECT\\b/is', $statement);
 
@@ -204,5 +233,65 @@ abstract class AbstractSqlAnalyzer implements SqlAnalyzerInterface
             'tables_confidence'    => $tablesConfidence,
             'warnings'             => $warnings,
         ];
+    }
+
+    /**
+     * IS NULL / IS NOT NULL は条件の意味なので NULL 正規化の対象から外す。
+     *
+     * @param string $statement
+     * @return array{0:string,1:array}
+     */
+    private function protectIsNullPredicates($statement)
+    {
+        $restore = [];
+        $index   = 0;
+        $protected = preg_replace_callback('/\\bIS\\s+(?:NOT\\s+)?NULL\\b/i', function ($m) use (&$restore, &$index) {
+            $token = '__TEKAGAMIISNULL' . $this->letters($index++) . '__';
+            $restore[$token] = $m[0];
+            return $token;
+        }, $statement);
+
+        return [$protected, $restore];
+    }
+
+    /**
+     * @param int $index
+     * @return string
+     */
+    private function letters($index)
+    {
+        $letters = '';
+        do {
+            $letters = chr(65 + ($index % 26)) . $letters;
+            $index = (int)floor($index / 26) - 1;
+        } while ($index >= 0);
+        return $letters;
+    }
+
+    /**
+     * @param string $value
+     * @return bool
+     */
+    protected function isDbTimeLiteral($value)
+    {
+        return (bool)preg_match('/^(?:' . $this->getDbTimePattern() . ')$/i', trim($value));
+    }
+
+    /**
+     * @param string $statement
+     * @return bool
+     */
+    protected function containsDbTimeLiteral($statement)
+    {
+        return (bool)preg_match('/' . $this->getDbTimePattern() . '/i', $statement);
+    }
+
+    /**
+     * @param string $statement
+     * @return bool
+     */
+    protected function containsDualSelect($statement)
+    {
+        return (bool)preg_match('/\\bFROM\\s+DUAL\\b/i', $statement);
     }
 }

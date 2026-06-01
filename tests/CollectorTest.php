@@ -182,7 +182,25 @@ class CollectorTest extends TestCase
         $this->assertSame('sql', $timeline[0]['type']);
         $this->assertSame('SELECT', $timeline[0]['operation']);
         $this->assertSame('SELECT * FROM users WHERE id = {parameter}', $timeline[0]['statement_normalized']);
+        $this->assertSame('bound_sql', $timeline[0]['analysis']['input_quality']);
         $this->assertStringStartsWith('sha256:', $timeline[0]['statement_hash']);
+    }
+
+    public function testAddExpandedSqlAppendsLowTrustTimelineEvent()
+    {
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector(new Config('secret'), $sink);
+        $collector->start($this->makeHttp(), new Flow());
+        $collector->addExpandedSql("SELECT * FROM users WHERE id = 1", ['source' => 'ci3-last_query']);
+        $collector->finish($this->makeResponse());
+
+        $event = $sink->captured['timeline'][0];
+        $this->assertSame('expanded_sql', $event['analysis']['input_quality']);
+        $this->assertContains('expanded_sql_may_fragment_statement_hash', $event['analysis']['warnings']);
+        $this->assertContains('last_query_capture_has_no_bind_values', $event['analysis']['warnings']);
+        $this->assertArrayHasKey('statement_tokens', $event);
+        $this->assertArrayNotHasKey('bind_shape', $event);
+        $this->assertArrayNotHasKey('bind_tokens', $event);
     }
 
     public function testInjectedAnalyzerDialectIsRecorded()
@@ -209,6 +227,7 @@ class CollectorTest extends TestCase
         $this->assertSame('oracle', $event['analysis']['dialect']);
         $this->assertSame('SELECT {parameter} FROM dual WHERE note = {parameter}', $event['statement_normalized']);
         $this->assertSame([], $event['tables']); // dual は除外
+        $this->assertContains('oracle_dual_select', $event['analysis']['warnings']);
     }
 
     public function testCollectorRequiresAnalyzer()
@@ -249,7 +268,7 @@ class CollectorTest extends TestCase
         $sink      = new CaptureSink();
         $collector = $this->makeCollector(null, $sink);
         $collector->start($this->makeHttp(), new Flow());
-        $collector->addSql("INSERT INTO orders (status) VALUES ('shipped')");
+        $collector->addExpandedSql("INSERT INTO orders (status) VALUES ('shipped')");
         $collector->finish($this->makeResponse());
 
         $observed = $sink->captured['timeline'][0]['observed_values'];
@@ -264,7 +283,7 @@ class CollectorTest extends TestCase
         $sink      = new CaptureSink();
         $collector = $this->makeCollector($config, $sink);
         $collector->start($this->makeHttp(), new Flow());
-        $collector->addSql("INSERT INTO orders (user_id, status) VALUES (10, 'shipped')");
+        $collector->addExpandedSql("INSERT INTO orders (user_id, status) VALUES (10, 'shipped')");
         $collector->finish($this->makeResponse());
 
         $observed = $sink->captured['timeline'][0]['observed_values'];
@@ -537,6 +556,59 @@ class CollectorTest extends TestCase
         $this->assertArrayNotHasKey('Authorization', $sink->captured['http']['request_headers_shape']);
     }
 
+    public function testResponseHeadersAreNotCapturedByDefault()
+    {
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector(new Config('my-secret'), $sink);
+
+        $collector->start($this->makeHttp('GET', '/headers'), new Flow());
+        $response = $this->makeResponse();
+        $response->responseHeadersRaw = [
+            'Set-Cookie' => 'sid=secret; HttpOnly',
+            'Location' => '/oauth/callback?code=secret',
+        ];
+        $collector->finish($response);
+
+        $this->assertArrayNotHasKey('response_headers_shape', $sink->captured['http']);
+        $this->assertArrayNotHasKey('response_headers_tokens', $sink->captured['http']);
+    }
+
+    public function testResponseHeadersCaptureWhitelistOnly()
+    {
+        $config    = new Config('my-secret', ['keepResponseHeaderKeys' => ['X-Trace-Id']]);
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector($config, $sink);
+
+        $collector->start($this->makeHttp('GET', '/headers'), new Flow());
+        $response = $this->makeResponse();
+        $response->responseHeadersRaw = [
+            'Set-Cookie' => 'sid=secret; HttpOnly',
+            'Location' => '/oauth/callback?code=secret',
+            'X-Trace-Id' => 'trace-123',
+        ];
+        $collector->finish($response);
+
+        $this->assertSame(['X-Trace-Id' => 'string'], $sink->captured['http']['response_headers_shape']);
+        $this->assertArrayHasKey('X-Trace-Id', $sink->captured['http']['response_headers_tokens']);
+        $this->assertArrayNotHasKey('Set-Cookie', $sink->captured['http']['response_headers_shape']);
+        $this->assertArrayNotHasKey('Location', $sink->captured['http']['response_headers_shape']);
+    }
+
+    public function testResponseHeadersWithoutSecretHaveShapeOnly()
+    {
+        $config    = new Config(null, ['keepResponseHeaderKeys' => ['X-Trace-Id']]);
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector($config, $sink);
+
+        $collector->start($this->makeHttp('GET', '/headers'), new Flow());
+        $response = $this->makeResponse();
+        $response->responseHeadersRaw = ['X-Trace-Id' => 'trace-123'];
+        $collector->finish($response);
+
+        $this->assertSame(['X-Trace-Id' => 'string'], $sink->captured['http']['response_headers_shape']);
+        $this->assertArrayNotHasKey('response_headers_tokens', $sink->captured['http']);
+    }
+
     public function testShapeTruncationRecordsErrorAndContinues()
     {
         $config    = new Config(null, ['maxShapeNodes' => 3]);
@@ -574,5 +646,48 @@ class CollectorTest extends TestCase
         $this->assertStringStartsWith('hmac-sha256:', $trace['redaction']['token_format']);
         $this->assertArrayHasKey('query_tokens', $trace['http']);
         $this->assertArrayHasKey('statement_tokens', $trace['timeline'][0]);
+    }
+
+    // -------------------------------------------------------------------------
+    // enabled=false
+    // -------------------------------------------------------------------------
+
+    public function testDisabledCollectorDoesNothing()
+    {
+        $config    = new Config(null, ['enabled' => false]);
+        $sink      = new CaptureSink();
+        $collector = $this->makeCollector($config, $sink);
+
+        $collector->start($this->makeHttp('GET', '/test'));
+        $this->assertNull($collector->getActiveTraceId());
+
+        $collector->addSql('SELECT 1 FROM dual');
+        $collector->addCustom('event', ['x' => 1]);
+        $collector->addError('test_error', 'msg');
+        $collector->finish($this->makeResponse());
+
+        $this->assertSame(0, $sink->callCount);
+        $this->assertNull($sink->captured);
+    }
+
+    public function testEnabledTrueIsDefault()
+    {
+        $config = new Config(null);
+        $this->assertTrue($config->enabled);
+    }
+
+    public function testEnabledFalseViaOptions()
+    {
+        $config = new Config(null, ['enabled' => false]);
+        $this->assertFalse($config->enabled);
+    }
+
+    public function testKeepResponseHeaderKeysDefaultAndOption()
+    {
+        $default = new Config(null);
+        $this->assertSame([], $default->keepResponseHeaderKeys);
+
+        $configured = new Config(null, ['keepResponseHeaderKeys' => ['X-Trace-Id']]);
+        $this->assertSame(['X-Trace-Id'], $configured->keepResponseHeaderKeys);
     }
 }

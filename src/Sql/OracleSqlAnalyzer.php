@@ -43,4 +43,18 @@ class OracleSqlAnalyzer extends AbstractSqlAnalyzer
         }
         return parent::mapOperation($keyword);
     }
+
+    public function buildAnalysis($statement, $operation, array $tables, $source)
+    {
+        $analysis = parent::buildAnalysis($statement, $operation, $tables, $source);
+        if ($this->containsRownumFilter($statement)) {
+            $analysis['warnings'][] = 'oracle_rownum_bounded';
+        }
+        return $analysis;
+    }
+
+    protected function containsRownumFilter($statement)
+    {
+        return (bool)preg_match('/\\bROWNUM\\b/i', $statement);
+    }
 }

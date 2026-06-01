@@ -100,4 +100,35 @@ class SqlFingerprinterTest extends TestCase
         $this->assertSame($plain['fp_hash'], $sqlite['fp_hash']);
         $this->assertSame(['ID'], $sqlite['filter_columns']);
     }
+
+    public function testOracleRownumExcludedFromFpButPreservedInNonOracle()
+    {
+        $withRownum = $this->fingerprinter->fingerprint(
+            'select * from (select * from "SHOP_PRODUCTS" where "CODE" = ?) where rownum = ?',
+            'SELECT',
+            ['SHOP_PRODUCTS'],
+            'oracle'
+        );
+        $withoutRownum = $this->fingerprinter->fingerprint(
+            'SELECT * FROM shop_products WHERE code = ?',
+            'SELECT',
+            ['SHOP_PRODUCTS'],
+            'oracle'
+        );
+
+        $this->assertSame($withoutRownum['fp_hash'], $withRownum['fp_hash']);
+        $this->assertNotContains('ROWNUM', $withRownum['filter_columns']);
+    }
+
+    public function testRownumKeptInFilterColumnsForNonOracleDialect()
+    {
+        $fp = $this->fingerprinter->fingerprint(
+            'SELECT * FROM t WHERE id = ? AND rownum = ?',
+            'SELECT',
+            ['T'],
+            'sqlite'
+        );
+
+        $this->assertContains('ROWNUM', $fp['filter_columns']);
+    }
 }

@@ -48,6 +48,11 @@ class SqlFingerprinter
             $writeColumns = [];
         }
 
+        if ($dialect === 'oracle') {
+            $filterColumns = $this->excludeOraclePseudoColumns($filterColumns);
+            $writeColumns  = $this->excludeOraclePseudoColumns($writeColumns);
+        }
+
         return [
             'op'             => $op,
             'tables'         => $normalizedTables,
@@ -97,6 +102,17 @@ class SqlFingerprinter
         $result = array_values(array_unique($result));
         sort($result, SORT_STRING);
         return $result;
+    }
+
+    /**
+     * @param string[] $columns
+     * @return string[]
+     */
+    private function excludeOraclePseudoColumns(array $columns)
+    {
+        return array_values(array_filter($columns, function ($c) {
+            return $c !== 'ROWNUM' && $c !== 'ROWID';
+        }));
     }
 
     /**

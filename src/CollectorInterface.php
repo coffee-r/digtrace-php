@@ -10,7 +10,7 @@ use CoffeeR\Tekagami\Http\HttpResponse;
  * トレースのライフサイクルを管理する主要公開インターフェース。
  *
  * 1リクエスト = 1トレース。コールシーケンス:
- *   start() → [addSql() / addCustom() / addError()] → finish()
+ *   start() → [addSql() / addExpandedSql() / addCustom() / addError()] → finish()
  *
  * 外部 HTTP 呼び出しの記録は addCustom('http_call', ...) で代替する。
  *
@@ -41,21 +41,27 @@ interface CollectorInterface
     public function getActiveTraceId();
 
     /**
-     * 実行された SQL 文をタイムラインに追記する。
+     * 実行された SQL 文をタイムラインに追記する（高信頼入力）。
      *
      * Collector が正規化・HMAC トークン化・テーブル抽出・effects 集計を内部で行う。
      * アクティブトレースなしの場合は黙って無視。seq は Collector が全イベント共通のカウンタで採番する。
      *
-     * @param string $statement  実行された SQL 文字列。
-     *                           バインド値が埋め込まれた形 (CI3 の query_history 等) でも、
-     *                           プレースホルダ付きの形 (? や :name) でも可。
+     * @param string $sql        プレースホルダ付き SQL 文字列。
      * @param array  $binds      バインドパラメータ値の配列。
-     *                           statement に値が埋め込まれている場合は空配列を渡す。
-     * @param string $source     SQL の取得元識別子。analysis.warnings の生成に使う。
-     *                           例: 'query_history' (CI3 $db->queries から事後キャプチャ)
-     *                               'intercepted'   (DB ラッパーによるリアルタイムキャプチャ)
+     * @param array  $options    追加メタ。source に取得元識別子を指定できる。
      */
-    public function addSql($statement, array $binds = [], $source = 'unknown');
+    public function addSql($sql, array $binds = [], array $options = []);
+
+    /**
+     * 実行後 SQL / last_query / query_history をタイムラインに追記する（低信頼入力）。
+     *
+     * bind 分離が失われた SQL は statement_hash が分裂しやすいため、
+     * analysis.input_quality と warnings に低信頼であることを記録する。
+     *
+     * @param string $sql      bind 展開済み SQL 文字列。
+     * @param array  $options  追加メタ。source に取得元識別子を指定できる。
+     */
+    public function addExpandedSql($sql, array $options = []);
 
     /**
      * 任意の手動計装イベントをタイムラインに追記する。

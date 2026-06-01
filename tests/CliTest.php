@@ -68,4 +68,54 @@ class CliTest extends TestCase
         $this->assertSame(0, $code);
         $this->assertStringNotContainsString('compare', $output);
     }
+
+    public function testHelpListsDiff()
+    {
+        list($code, $output) = $this->runCli('--help');
+
+        $this->assertSame(0, $code);
+        $this->assertStringContainsString('diff', $output);
+    }
+
+    public function testDiffCommandJsonOutput()
+    {
+        $legacy = escapeshellarg(__DIR__ . '/fixtures/diff-legacy.json');
+        $target = escapeshellarg(__DIR__ . '/fixtures/diff-target.json');
+        list($code, $output) = $this->runCli('diff ' . $legacy . ' ' . $target . ' --format json');
+
+        $this->assertSame(0, $code, 'Exit code: ' . $output);
+        $decoded = json_decode($output, true);
+        $this->assertIsArray($decoded);
+        $this->assertArrayHasKey('entrypoints', $decoded);
+        $this->assertArrayHasKey('meaning_near_matches', $decoded);
+    }
+
+    public function testDiffCommandMarkdownOutput()
+    {
+        $legacy = escapeshellarg(__DIR__ . '/fixtures/diff-legacy.json');
+        $target = escapeshellarg(__DIR__ . '/fixtures/diff-target.json');
+        list($code, $output) = $this->runCli('diff ' . $legacy . ' ' . $target . ' --format md');
+
+        $this->assertSame(0, $code, 'Exit code: ' . $output);
+        $this->assertStringContainsString('# tekagami diff report', $output);
+    }
+
+    public function testDiffRequiresTwoFiles()
+    {
+        $legacy = escapeshellarg(__DIR__ . '/fixtures/diff-legacy.json');
+        list($code, $output) = $this->runCli('diff ' . $legacy);
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('exactly 2', $output);
+    }
+
+    public function testDiffRejectsUnknownFormat()
+    {
+        $legacy = escapeshellarg(__DIR__ . '/fixtures/diff-legacy.json');
+        $target = escapeshellarg(__DIR__ . '/fixtures/diff-target.json');
+        list($code, $output) = $this->runCli('diff ' . $legacy . ' ' . $target . ' --format xml');
+
+        $this->assertSame(1, $code);
+        $this->assertStringContainsString('Unknown format', $output);
+    }
 }

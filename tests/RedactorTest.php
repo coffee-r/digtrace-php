@@ -192,6 +192,50 @@ class RedactorTest extends TestCase
         $this->assertSame(['secret' => 'val'], $result);
     }
 
+    public function testBuildValuesNestedKeyExtracted()
+    {
+        $config = new Config(null, ['keepKeys' => ['product_code']]);
+        $r      = new Redactor($config);
+        $result = $r->buildValues(['order' => ['product_code' => 'ABC', 'qty' => 2]]);
+        $this->assertSame(['product_code' => 'ABC'], $result);
+    }
+
+    public function testBuildValuesShallowPriorityOverDeep()
+    {
+        $config = new Config(null, ['keepKeys' => ['status']]);
+        $r      = new Redactor($config);
+        $result = $r->buildValues([
+            'status' => 'outer',
+            'item'   => ['status' => 'inner'],
+        ]);
+        $this->assertSame(['status' => 'outer'], $result);
+    }
+
+    public function testBuildValuesDeepKeyWhenNoShallow()
+    {
+        $config = new Config(null, ['keepKeys' => ['code']]);
+        $r      = new Redactor($config);
+        $result = $r->buildValues(['item' => ['code' => 'X99', 'qty' => 1]]);
+        $this->assertSame(['code' => 'X99'], $result);
+    }
+
+    public function testBuildValuesNullValueRetained()
+    {
+        $config = new Config(null, ['keepKeys' => ['note']]);
+        $r      = new Redactor($config);
+        $result = $r->buildValues(['note' => null, 'other' => ['note' => 'deep']]);
+        $this->assertArrayHasKey('note', $result);
+        $this->assertNull($result['note']);
+    }
+
+    public function testBuildValuesBoolRetained()
+    {
+        $config = new Config(null, ['keepKeys' => ['active']]);
+        $r      = new Redactor($config);
+        $result = $r->buildValues(['meta' => ['active' => false]]);
+        $this->assertSame(['active' => false], $result);
+    }
+
     public function testBuildHeadersKeepsOnlyWhitelistedHeaders()
     {
         $config = new Config('secret', ['keepHeaderKeys' => ['X-Request-Id']]);

@@ -99,6 +99,9 @@
         "request_headers_shape":  { "description": "Key names and scalar types of request headers allowed by Config keepHeaderKeys. Values never appear here. Omitted when keepHeaderKeys is empty or no header matches." },
         "request_headers_tokens": { "description": "HMAC tokens for request header values allowed by Config keepHeaderKeys. Omitted when no secret, keepHeaderKeys is empty, or no header matches." },
 
+        "response_headers_shape":  { "description": "Key names and scalar types of response headers allowed by Config keepResponseHeaderKeys. Values never appear here. Omitted when keepResponseHeaderKeys is empty or no header matches." },
+        "response_headers_tokens": { "description": "HMAC tokens for response header values allowed by Config keepResponseHeaderKeys. Omitted when no secret, keepResponseHeaderKeys is empty, or no header matches." },
+
         "query_shape":    { "description": "Structure/types of URL query string parameters." },
         "query_tokens":   { "description": "HMAC tokens for query parameter values. null when no secret." },
         "query_values":   { "description": "Actual values of keys in Config keepKeys (whitelist). Survives AI export." },
@@ -136,7 +139,7 @@
       "required": [
         "seq", "type", "operation", "tables",
         "statement_normalized", "statement_hash", "statement_fingerprint",
-        "bind_shape", "observed_values", "analysis"
+        "observed_values", "analysis"
       ],
       "properties": {
         "seq":       { "type": "integer", "description": "Global causal position across all timeline events (1-based)." },
@@ -213,10 +216,11 @@
     "sql_analysis": {
       "description": "Confidence metadata for the SQL regex analysis. Low confidence is expected for complex queries; use warnings to understand gaps.",
       "type": "object",
-      "required": ["analyzer", "operation_confidence", "tables_confidence", "warnings"],
+      "required": ["analyzer", "input_quality", "operation_confidence", "tables_confidence", "warnings"],
       "properties": {
         "analyzer":             { "type": "string", "description": "e.g. 'regex'" },
         "dialect":              { "type": "string", "description": "SQL dialect used for analysis, e.g. 'oracle', 'sqlite'. Custom analyzers may report other identifiers." },
+        "input_quality":        { "enum": ["bound_sql", "expanded_sql"], "description": "How the SQL was captured. bound_sql means placeholders and binds were captured separately; expanded_sql means bind values may already be embedded." },
         "operation_confidence": { "enum": ["high", "best_effort", "unknown"] },
         "tables_confidence":    { "enum": ["high", "best_effort", "unknown"] },
         "warnings": {
