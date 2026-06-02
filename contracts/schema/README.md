@@ -1,157 +1,213 @@
 # tekagami Schema v1
 
-`tekagami-v1.schema.json` は JSONL の 1 行 = HTTP リクエスト 1 件を表すオブジェクトのスキーマ。
+`tekagami-v1.schema.json` describes one JSONL line: one observed HTTP request.
 
-このスキーマは **言語に依存しない契約** として扱う。PHP、C#、その他の observer が同じスキーマに沿った出力を出せば、同じ data tools と spec workflow で掘り起こしができる。
+The schema is a language-neutral contract. A PHP, C#, or any other observer can
+feed the same data tools and spec workflow as long as it emits records that
+conform to this schema.
 
----
+## Top-Level Fields
 
-## トップレベルフィールド
-
-| フィールド | 型 | 説明 |
+| Field | Type | Description |
 |---|---|---|
-| `schema_version` | `1` (const) | スキーマバージョン |
-| `trace_id` | string | リクエスト 1 件の識別子 |
-| `started_at` | string (date-time) | リクエスト開始時刻 |
-| `flow` | object | 任意の調査フロー相関情報（後述） |
-| `redaction` | object | マスキングモードの記録（後述） |
-| `http` | object | リクエスト/レスポンス情報（後述） |
-| `timeline` | array | データ操作の時系列（後述） |
-| `effects` | array | 書き込み操作のサマリ（後述） |
-| `errors` | array | キャプチャ失敗またはアプリ例外 |
-
----
+| `schema_version` | `1` (const) | Schema version. |
+| `trace_id` | string | Identifier for one observed request. |
+| `started_at` | string (date-time) | Request start time. |
+| `flow` | object | Optional investigation correlation data. |
+| `redaction` | object | Redaction/tokenization mode metadata. |
+| `http` | object | Request and response envelope. |
+| `timeline` | array | Data operation timeline. |
+| `effects` | array | Write operation summary. |
+| `errors` | array | Capture failures or observed application errors. |
 
 ## Value Classes
 
-値の記録には次の表現が存在し、用途によって使い分ける。
+Values are represented in several ways:
 
-| サフィックス | 内容 | AI export で残るか |
+| Suffix | Meaning | Kept in AI export |
 |---|---|---|
-| `*_shape` | 構造とスカラー型のみ。実値なし | 残る |
-| `*_tokens` | HMAC トークン。同じ値 → 同じ記号。実値は復元不可 | 残る |
-| `*_values` (HTTP) / `observed_values` (SQL) | `keepKeys` / `sqlValueAllowlist` にマッチしたキーの**実値**。業務分岐（`amount >= 100000` など）を読むための非機微値 | **意図的に残す** |
-| `statement_text` | 生 SQL 文字列。`captureText=true` 時のみ・デフォルト off・**平文** | 除去される |
+| `*_shape` | Structure and scalar types only. No raw values. | Yes |
+| `*_tokens` | HMAC tokens. Equal values produce equal tokens, but values cannot be recovered. | Yes |
+| `*_values` (HTTP) / `observed_values` (SQL) | Raw values explicitly allowed by `keepKeys` or `sqlValueAllowlist`, intended only for non-sensitive business evidence. | Yes, intentionally |
+| `statement_text` | Raw SQL text. Emitted only with `captureText=true`; plaintext and off by default. | No |
 
-### 白リスト一本（実値の制御）
+### Explicit Allowlist Only
 
-実値の出力は**デフォルトで一切なし**（`*_shape` のみ）。**明示した白リスト**に載せたキー／列だけが実値として残る:
+Raw values are never emitted by default. Only explicitly allowlisted keys or
+columns are stored as raw values:
 
-- `keepKeys`（完全一致・大小無視、デフォルト空）→ HTTP の `*_values` に実値を残す。
-- `keepHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP リクエストヘッダの shape/token を残す。空ならリクエストヘッダの存在情報も残さない。
-- `keepResponseHeaderKeys`（完全一致・大小無視、デフォルト空）→ HTTP レスポンスヘッダの shape/token を残す。空ならレスポンスヘッダの存在情報も残さない。
-- `sqlValueAllowlist`（`テーブル名.列名` または `列名`、大小無視、デフォルト空）→ SQL の `observed_values` に実値を残す。
+- `keepKeys`: case-insensitive exact match for HTTP query/body keys. Matching
+  values are stored in HTTP `*_values`.
+- `keepHeaderKeys`: case-insensitive exact match for request headers. Matching
+  headers are stored as shape/token only. Empty means request header presence is
+  not recorded.
+- `keepResponseHeaderKeys`: case-insensitive exact match for response headers.
+  Matching headers are stored as shape/token only. Empty means response header
+  presence is not recorded.
+- `sqlValueAllowlist`: case-insensitive `table.column` or `column`. Matching
+  values are stored in SQL `observed_values`.
 
-旧 `deny_keys`（黒リスト）は**廃止**。実値は明示オプトインのみなので「黒が白に勝つ」という順序ルールは存在しない。`secret` 設定時の `*_tokens` は query / request body では全キーに出る。HTTP ヘッダの token は request / response ともヘッダ allowlist に一致したものだけ出る。
+The old `deny_keys` blacklist model is removed. There is no deny-vs-allow
+precedence rule because raw values are opt-in only. When `secret` is set,
+`*_tokens` are emitted for query/body values across all keys. Header tokens are
+emitted only for request/response headers that match their header allowlists.
 
-> **設定キー名について**: ここでは PHP の `Config` プロパティ名（`keepKeys` / `captureText` など camelCase）で表記する。これらは実際の API 名（root `README.md` と一致）。
-
----
+Configuration names here use the PHP `Config` property names, such as
+`keepKeys` and `captureText`.
 
 ## Flow
 
-`flow` は、複数の HTTP リクエストを調査用に紐づける任意の相関情報。
+`flow` is optional investigation correlation for grouping multiple HTTP
+requests.
 
-通常は Collector 導入側で指定しないため、`flow_id` / `seq` は null になる。開発者や QA が明示的に調査シナリオを流す場合だけ、ヘッダやテストコードなどから `flow_id` / `seq` を渡す。
+In normal observer usage, no `Flow` is passed and `flow_id` / `seq` are `null`.
+Developers or QA may pass flow values from a test header or scenario runner when
+they intentionally run a correlated investigation.
 
-| フィールド | 説明 |
+| Field | Description |
 |---|---|
-| `flow_id` | 任意の相関識別子。null のときは flow 指定なし |
-| `seq` | 明示されたステップ番号（任意）。null 可 |
+| `flow_id` | Optional correlation identifier. `null` means no flow was specified. |
+| `seq` | Optional step number. May be `null`. |
 
-本番のセッション由来 ID は、ブラウザバック、別タブ、非同期リクエスト、離脱などが混ざるため、業務シナリオそのものを表すとは限らない。report は `flow` から仕様や業務フローを断定しない。
-
----
+Production session-derived ids do not necessarily represent business scenarios:
+browser back, multiple tabs, async requests, and abandonment can all mix
+requests. Reports must not infer specifications or business workflows from
+`flow` alone.
 
 ## HTTP Envelope
 
-`http` オブジェクトはリクエスト入力とレスポンス出力を記録する。
+The `http` object records request input and response output.
 
-### パスの表現
+### Path Fields
 
-| フィールド | 例 | 説明 |
+| Field | Example | Description |
 |---|---|---|
-| `path` | `/products/123` | 実際のリクエストパス |
-| `path_pattern` | `/products/{id}` | エンドポイントパターン。ルーターまたは設定から導出。取れなければ null |
-| `path_tokens` | `/products/{p-a1b2}` | HMAC トークン化パス。`path_pattern` が null または secret 未設定なら null |
+| `path` | `/products/123` | Actual request path. |
+| `path_pattern` | `/products/{id}` | Endpoint pattern from router/config if available. |
+| `path_tokens` | `/products/{p-a1b2}` | HMAC-tokenized path. Omitted when `path_pattern` is unavailable or `secret` is unset. |
 
-### レスポンス種別
+### Response Kind
 
-`response_kind` は `"json"` / `"html"` / `"other"` / `null`。
+`response_kind` is `"json"`, `"html"`, `"other"`, or `null`.
 
-- `"json"` → `response_shape` にレスポンス構造が入る
-- `"html"` → `views[]` にテンプレート名と変数の shape が入る。HTML 本文は取らない（大きくなるため）
-- `"other"` / `null` → どちらも記録しない
+- `"json"`: response structure is recorded in `response_shape`.
+- `"html"`: rendered templates and variable shapes are recorded in `views[]`.
+  HTML bodies are not recorded because they can be large.
+- `"other"` / `null`: no response body shape is recorded.
 
-### HTTP ヘッダ
+### HTTP Headers
 
-`request_headers_shape` / `request_headers_tokens` は `keepHeaderKeys` に一致したリクエストヘッダだけを記録する。`response_headers_shape` / `response_headers_tokens` は `keepResponseHeaderKeys` に一致したレスポンスヘッダだけを記録する。どちらもデフォルトは空なので、ヘッダの存在情報も残らない。
+`request_headers_shape` / `request_headers_tokens` contain only request headers
+matching `keepHeaderKeys`. `response_headers_shape` /
+`response_headers_tokens` contain only response headers matching
+`keepResponseHeaderKeys`. Both allowlists default to empty, so header presence is
+not recorded by default.
 
-ヘッダの実値保存フィールドはない。`secret` 設定時だけ HMAC token が出る。`Authorization`, `Cookie`, `Set-Cookie`, `Location`, `X-Api-Key` などは shape だけでも機微になりうるため、必要なヘッダ名だけを明示する。`X-Tekagami-Flow` も `keepHeaderKeys` に入れれば request header として token 化できるが、`flow.flow_id` は開発・QA が明示した非機密の調査IDとして生値で記録される。
-
----
+There is no field for raw header values. When `secret` is set, only HMAC tokens
+are emitted. `Authorization`, `Cookie`, `Set-Cookie`, `Location`, and
+`X-Api-Key` can be sensitive even as presence information, so include only the
+headers required for a specific investigation. `X-Tekagami-Flow` can be
+tokenized as a request header when allowlisted, but `flow.flow_id` is stored as
+the raw value because it is expected to be an explicit non-sensitive QA or
+development investigation id.
 
 ## Timeline
 
-`timeline[]` は 1 リクエスト内のデータ操作を **発生順** に並べる。`seq` は SQL / カスタムを通じた単一カウンタ（1 始まり）。
+`timeline[]` records data operations in occurrence order within one request.
+`seq` is one shared counter across SQL and custom events, starting at 1.
 
 ### type: "sql"
 
-SQL ステートメント 1 件。
+One SQL statement.
 
-- `statement_normalized` — リテラルを `{parameter}` に置換した正規化 SQL。同一パターンのグルーピング基準。DB 生成時刻は `{db_time}` に置換する。
-- `statement_hash` — `sha256:<hex>` (`statement_normalized` のハッシュ)。層A。正規化 SQL 文字列の厳密同一性を表し、`effects[].statement_hash` と対応。
-- `statement_fingerprint` — 層B。操作種別、対象テーブル、絞り込み列、書込列から作る意味レベルのフィンガープリント。現在の `tekagami-v1` では必須。
-  - `fp_hash` — `fp1:<hex>`。CI3 の生SQLと Laravel/Eloquent のSQLのように文字列が変わる移行でも、意味レベルの比較材料にする。
-  - `filter_columns` — `WHERE` / `ON` / `HAVING` の比較左辺から抽出した列。
-  - `write_columns` — `INSERT` 列リスト / `UPDATE SET` 左辺から抽出した列。
-- `observed_values` — `sqlValueAllowlist` にマッチした列の実値。`{ "ORDERS.STATUS": { redacted: false, values: ["shipped"] } }` のような形式。実行された SQL に値が埋め込まれている場合（INSERT/UPDATE SET/WHERE）に正規表現ベースの best-effort で抽出する。関数呼び出し、カンマを含む文字列、複雑なサブクエリ、DB 方言固有のリテラルでは抽出できないことがある。現状は実値（`redacted: false`）のみ。トークン化版（`redacted: true`）は将来拡張。
-- `analysis.analyzer` — 解析方式。現状は `regex`。
-- `analysis.dialect` — 解析に使った SQL 方言（`oracle` / `sqlite`）。`Collector` に注入したアナライザに対応する。
-- `analysis.input_quality` — SQL 採取品質。`bound_sql` はプレースホルダ付き SQL + binds、`expanded_sql` は last_query / query_history などの bind 展開済み SQL。
-- `analysis.warnings` — 信頼度が下がる原因を列挙。`expanded_sql_may_fragment_statement_hash`、`query_history_capture_has_no_bind_values`、`last_query_capture_has_no_bind_values`、`db_time_normalized`、`oracle_dual_select` など。
+- `statement_normalized`: SQL with literals replaced by `{parameter}`. Database
+  generated time values are normalized to `{db_time}`.
+- `statement_hash`: `sha256:<hex>` of `statement_normalized`. This is layer A:
+  strict equality of normalized SQL text. It corresponds to
+  `effects[].statement_hash`.
+- `statement_fingerprint`: layer B, built from operation, target tables, filter
+  columns, and write columns. Required in the current `tekagami-v1` schema.
+- `statement_fingerprint.fp_hash`: `fp1:<hex>`. Useful for migration review
+  when raw SQL text changes across frameworks but the operation is meaning-near.
+- `statement_fingerprint.filter_columns`: columns extracted from comparison
+  left-hand sides in `WHERE`, `ON`, and `HAVING`.
+- `statement_fingerprint.write_columns`: columns extracted from `INSERT` column
+  lists and `UPDATE SET` left-hand sides.
+- `observed_values`: raw SQL values matching `sqlValueAllowlist`, for example
+  `{ "ORDERS.STATUS": { "redacted": false, "values": ["shipped"] } }`.
+  Extraction is regex-based best effort for executed SQL text and may miss
+  functions, comma-containing strings, complex subqueries, or dialect-specific
+  literals. Tokenized `observed_values` are reserved for future extension.
+- `analysis.analyzer`: analyzer implementation style. Currently `regex`.
+- `analysis.dialect`: SQL dialect used by the injected analyzer, such as
+  `oracle` or `sqlite`.
+- `analysis.input_quality`: SQL capture quality. `bound_sql` means placeholder
+  SQL plus binds; `expanded_sql` means values were already expanded, such as
+  `last_query` or query history.
+- `analysis.warnings`: reasons capture confidence is lower, such as
+  `expanded_sql_may_fragment_statement_hash`,
+  `query_history_capture_has_no_bind_values`,
+  `last_query_capture_has_no_bind_values`, `db_time_normalized`, or
+  `oracle_dual_select`.
 
-SQL 採取は `Collector::addSql($sql, $binds, ['source' => '...'])` を高信頼入力として推奨する。bind 分離済みの SQL しか取れない場合は `Collector::addExpandedSql($sql, ['source' => 'ci3-last_query'])` を使い、低信頼入力であることをログに残す。
+Prefer `Collector::addSql($sql, $binds, ['source' => '...'])` when placeholder
+SQL and binds are available. Use
+`Collector::addExpandedSql($sql, ['source' => 'ci3-last_query'])` when only
+expanded SQL is available; the record will carry the lower-quality input signal.
 
-層Aは「SQL文字列パターンが同じか」を見る署名で、層Bは「操作対象と列集合が同じか」を見る署名です。移行調査では、層Aの差分はノイズになりやすいため、`observer-php/bin/tekagami export` が出す層B込みのコンパクトJSONを legacy / target で2回作り、AIや人が差分説明を読む運用を想定します。
+Layer A answers "is the normalized SQL text the same?" Layer B answers "does the
+operation target the same tables and columns?" In migration review, layer A can
+be noisy across frameworks, so `tools/tekagami-data/bin/tekagami export`
+includes layer B data for legacy/target comparison.
 
 ### type: "custom"
 
-アプリ／アダプタが手動で埋め込む任意操作。`label` でイベント種別を識別する。`data_shape` は pattern signature に入らないため、移行比較で業務分岐を区別したい場合は安定した `label` に分岐理由を含める。
-
----
+Manual instrumentation from the app or adapter. `label` identifies the event.
+`data_shape` is not part of pattern signatures, so encode stable branch
+distinctions in the label when they must be compared as distinct behavior.
 
 ## Effects
 
-`effects[]` は `timeline[type=sql]` の書き込みステートメント（INSERT / UPDATE / DELETE / MERGE / REPLACE / UPSERT）を `(op, table, statement_hash)` 単位で集約したサマリ。`effects[].statement_hash` は `timeline[type=sql].statement_hash` と対応する。
+`effects[]` summarizes write SQL statements from `timeline[type=sql]`:
+`INSERT`, `UPDATE`, `DELETE`, `MERGE`, `REPLACE`, and `UPSERT`. Summaries are
+grouped by `(op, table, statement_hash)`.
 
-`captureEffects: false` で無効化可能。
+`effects[].statement_hash` corresponds to `timeline[type=sql].statement_hash`.
 
----
+Set `captureEffects: false` to disable effect summaries.
 
 ## Production Validation
 
-このスキーマはテスト / CI 上の契約チェックとして使う。`tests/SchemaConformanceTest.php` が fixture と実 `Collector` 出力の両方を検証する。本番リクエストごとのバリデーションは行わない（観測オーバーヘッドを上げないため）。
+The schema is used as a test/CI contract. `tests/SchemaConformanceTest.php`
+validates both fixtures and actual `Collector` output. Production requests are
+not validated per request to avoid observation overhead.
 
-**AI 分析で効くフィールド**（そのまま AI に渡すとき注目するもの）:
-- `statement_normalized` — SQLパターンの読み取り
-- `statement_hash` — effects との突合
-- `statement_fingerprint` — 跨フレームワーク移行での SQL 意味比較
-- `observed_values` — allowlist に入れた列の業務判断材料
-- `effects[]` — 書き込み操作のサマリ（timeline を全スキャンしなくて済む）
-- `query_values` / `request_values` — リクエストの業務的な判断材料
+Fields that are especially useful for AI or human analysis:
 
-AI 送付用には、生の JSONL ではなく `observer-php/bin/tekagami export <jsonl...>` の出力を使う。SQL全文は `sql_dictionary` に辞書化され、各実行パターンは短い SQL ID と `fp_hash` を参照するため、通常の `report.md` よりトークンを抑えられる。
+- `statement_normalized`: SQL pattern reading.
+- `statement_hash`: joins timeline entries to effects.
+- `statement_fingerprint`: meaning-near SQL comparison across framework
+  migrations.
+- `observed_values`: allowlisted SQL values that provide business evidence.
+- `effects[]`: write summaries without scanning the full timeline.
+- `query_values` / `request_values`: allowlisted HTTP values that provide
+  business evidence.
 
-旧系/新系の移行評価では、legacy / target を別々に `export` し、`observer-php/bin/tekagami diff <legacy-export.json> <target-export.json>` で決定論的な差分を出す。必要に応じて両プロジェクトのコード、DDL、fixture と一緒に AI や人間へ渡す。
+For AI review, prefer
+`tools/tekagami-data/bin/tekagami export <jsonl...>` over raw JSONL. The export
+deduplicates SQL text into `sql_dictionary` and lets behavior patterns refer to
+short SQL ids and `fp_hash`.
 
----
+For migration review, export legacy and target logs separately, then run
+`tools/tekagami-data/bin/tekagami diff <legacy-export.json> <target-export.json>`
+to produce deterministic differences.
 
-## v1 で専用 type がないもの
+## Currently Represented as Custom Events
 
-次の専用 timeline type はスキーマの `oneOf` に未収録。必要な場合は `addCustom()` で手動記録する。
+The following dedicated timeline types are not in the v1 `oneOf`. Record them
+with `addCustom()` when needed:
 
-- `type: "external_http"` — 外部 WebAPI 呼び出し
-- `type: "file"` — ファイルパスの読み書き
-- `type: "session"` — セッションへの書き込み
-- `observed_values` のトークン化版（`redacted: true`）
+- `type: "external_http"`: external Web API calls.
+- `type: "file"`: file reads/writes.
+- `type: "session"`: session writes.
+- Tokenized `observed_values` (`redacted: true`).

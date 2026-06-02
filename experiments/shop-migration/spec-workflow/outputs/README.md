@@ -1,8 +1,8 @@
 # outputs
 
-仕様候補や読み手別ビューの出力先です。
+Place specification candidates and audience-specific views here.
 
-推奨ファイル名:
+Recommended file names:
 
 - `summary-triage.md`
 - `{group}.spec.md`
