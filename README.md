@@ -54,7 +54,7 @@ php tools/tekagami-data/bin/tekagami diff \
 - PHP observer: [observer-php/README.md](observer-php/README.md)
 - JSONL contract: [contracts/schema/README.md](contracts/schema/README.md) and [contracts/schema/tekagami-v1.schema.json](contracts/schema/tekagami-v1.schema.json)
 - Data tools: [tools/tekagami-data/README.md](tools/tekagami-data/README.md)
-- Spec workflow: [spec/README.md](spec/README.md)
+- Spec workflow: [spec/README.md](spec/README.md) (Japanese operational guide)
 - Experiments: [experiments/README.md](experiments/README.md)
 
 ## License

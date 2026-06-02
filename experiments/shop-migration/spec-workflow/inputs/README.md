@@ -1,10 +1,11 @@
 # inputs
 
-調査回ごとの入力ファイルを置く場所です。
+Place per-investigation input files here.
 
-大きい JSONL を常にコミットする必要はありません。まずは既存 example の生成物を参照します。
+Large JSONL files do not need to be committed by default. Start by referencing
+the generated outputs already present in the example scenario.
 
-推奨ファイル名:
+Recommended file names:
 
 - `summary.json`
 - `summary.md`

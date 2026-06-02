@@ -1,27 +1,31 @@
 # CI3 Shop E2E Example
 
-CodeIgniter3 + PHP 7.3 + Oracle Database Free のローカルE2Eサンプルです。ECサイトの注文分岐を実際のHTTP APIとして叩き、tekagami JSONL とレポートを生成します。
+This is a local E2E sample using CodeIgniter 3, PHP 7.3, and Oracle Database
+Free. It exercises shop/order branches through real HTTP APIs and generates
+tekagami JSONL plus reports.
 
-## 構成
+## Components
 
-- `web`: PHP 7.3 Apache、CodeIgniter3、OCI8、tekagami
-- `oracle`: `gvenzl/oracle-free:23-slim`
-- ログ出力: `experiments/ci3-shop/var/tekagami.jsonl`
+- `web`: PHP 7.3 Apache, CodeIgniter 3, OCI8, and tekagami.
+- `oracle`: `gvenzl/oracle-free:23-slim`.
+- Log output: `experiments/shop-migration/ci3-shop/var/tekagami.jsonl`.
 
-Oracle は 12c そのものではありません。arm64 Mac でも動かしやすい最小寄りの現実解として 23-slim を使い、SQLは保守的なOracle方言に寄せています。
+The Oracle image is not Oracle 12c. The scenario uses `23-slim` as a pragmatic
+local option that runs well on arm64 Macs, while keeping SQL conservative and
+Oracle-like.
 
-## 起動
+## Run
 
 ```bash
-cd experiments/ci3-shop
+cd experiments/shop-migration
 docker compose up -d --build
-./scripts/wait-for-app.sh
-./scripts/run-e2e.sh
-./scripts/report.sh
-./scripts/analyze.sh
+./ci3-shop/scripts/wait-for-app.sh
+./ci3-shop/scripts/run-e2e.sh
+./ci3-shop/scripts/report.sh
+./ci3-shop/scripts/analyze.sh
 ```
 
-生成物:
+Generated outputs:
 
 - `var/tekagami.jsonl`
 - `var/flow-map.tsv`
@@ -30,11 +34,12 @@ docker compose up -d --build
 - `var/export.json`
 - `var/analysis.md`
 
-`var/` には代表サンプル出力をコミットしています。exampleを実行しなくても、tekagami がどのような JSONL / report / export を出すか確認できます。再実行すると `trace_id`、時刻、flow id などが変わるため差分が出ます。
+Representative sample outputs are committed under `var/`. You can inspect the
+JSONL, report, and export without running the example. Reruns change `trace_id`,
+timestamps, and flow ids, so diffs are expected.
 
-仕様候補の作成は `../../spec/examples/ci3-shop/` のプロンプトを使います。`var/` の出力物を入力として参照し、LLM との作業は spec 側で行います。
-
-`var/flow-map.tsv` は人間の検証用対応表なので、AI 分析では通常渡しません。
+`var/flow-map.tsv` is a human verification aid and is usually not passed to AI
+analysis.
 
 ## API
 
@@ -45,8 +50,13 @@ docker compose up -d --build
 - `POST /api/orders/{id}/cancel`
 - `POST /api/payments/credit/callback`
 
-`scripts/run-e2e.sh` は各シナリオに8桁のランダム `flow_id` を割り当て、JSONL にはその ID だけを残します。人間が読むための対応表は `var/flow-map.tsv` に出ます。
+`scripts/run-e2e.sh` assigns an 8-digit random `flow_id` to each scenario. The
+JSONL records only that id; the human-readable mapping is written to
+`var/flow-map.tsv`.
 
-## 注意
+## Notes
 
-このサンプルは仕様調査用の観測データを作るためのデモです。業務ルールの完全なEC実装ではなく、分岐、SQLフロー、副作用、N+1、customイベントの観測を目的にしています。
+This sample creates observation data for specification and migration research.
+It is not intended to be a complete ecommerce implementation. It is designed to
+show branches, SQL flows, side effects, N+1 behavior, and custom event
+observations.
