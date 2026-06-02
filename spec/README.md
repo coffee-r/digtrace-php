@@ -2,13 +2,13 @@
 
 `spec` は、tekagami が採取した観測証拠と、現在のアプリケーション文脈を合わせて「生きているアプリケーション仕様候補」を作るための上位レイヤです。
 
-`tekagami-php` 本体は、実行中アプリの HTTP / SQL / custom event / response shape を安全に記録し、`summary` / `report` / `export` / `diff` で決定論的に加工するところまでを担当します。
+`tekagami` 本体は、実行中アプリの HTTP / SQL / custom event / response shape を安全に記録し、`summary` / `report` / `export` / `diff` で決定論的に加工するところまでを担当します。
 
 `spec` は、その先の作業を扱います。
 
 ```text
 1. 観測する
-   tekagami-php: JSONL / summary / export / diff
+   tekagami: JSONL / summary / export / diff
 
 2. 文脈を集める
    spec: code, routes, DDL, master data, fixture, config の束ね方
